@@ -52,7 +52,7 @@ class YFinanceProvider:
                     interval=self.interval,
                     auto_adjust=self.auto_adjust,
                     group_by="ticker",
-                    threads=True,
+                    threads=False,  # avoid yfinance sqlite "database is locked"
                     progress=False,
                 )
             except Exception:
