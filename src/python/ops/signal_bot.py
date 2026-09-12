@@ -48,7 +48,6 @@ def _is_market_hours_ok(*, force: bool = False) -> tuple[bool, str]:
 
 def _load_bars(mode: str, csv_path: Optional[str], symbols: list[str]):
     if mode == "TEST" and not csv_path:
-        # TEST uses small synthetic subset even if ALL requested (speed)
         test_syms = symbols[:5] if symbols else ["BBCA", "BBRI", "TLKM"]
         c = SyntheticProvider(n=80, seed=42).fetch(test_syms)
         return c.df, c.source, hashlib.sha256(c.df.to_csv(index=False).encode()).hexdigest()
@@ -163,13 +162,13 @@ def run(
     ok_sched, sched_reason = _is_market_hours_ok(force=force_schedule or mode == "TEST")
     report["schedule"] = {"ok": ok_sched, "reason": sched_reason}
     if not ok_sched and mode == "OPERATIONAL":
-        report["status"] = "BLOCKED_SCHEDULE"; _write_report(art_path, report); raise SystemExit(0)
+        report["status"] = "BLOCKED_SCHEDULE"; _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(0)
     try:
         bars, source, data_hash = _load_bars(mode, csv, syms)
     except Exception as e:
         report.update({"status": "DATA_FAILURE", "error": str(e), "signals_generated": 0})
         _notify_halt(mode, "DATA FAILURE", trading_date, str(e), state_path, report)
-        _write_report(art_path, report); raise SystemExit(1)
+        _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(1)
     report["data_source"] = source; report["data_hash"] = data_hash
     report["symbols"] = sorted(bars["symbol"].astype(str).unique().tolist()) if "symbol" in bars.columns else syms
     report["symbols_loaded_count"] = len(report["symbols"])
@@ -179,13 +178,27 @@ def run(
     if not q.ok:
         report["status"] = "HALTED_DATA_QUALITY"; report["signals_generated"] = 0
         _notify_halt(mode, "DATA QUALITY FAILURE", trading_date, "; ".join(q.issues[:5]), state_path, report)
-        _write_report(art_path, report); raise SystemExit(1)
-    fg = freshness_gate(bars, require_current_day=(mode == "OPERATIONAL"), max_stale_days=2.0 if mode != "TEST" else 30.0)
+        _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(1)
+    fg = freshness_gate(
+        bars,
+        require_current_day=(mode == "OPERATIONAL"),
+        max_stale_days=2.0 if mode != "TEST" else 30.0,
+        allow_last_session_on_holiday=True,
+    )
     report["freshness"] = fg
     if mode != "TEST" and fg.get("status") != "PASS":
-        report["status"] = "HALTED_STALE_DATA"; report["signals_generated"] = 0
-        _notify_halt(mode, "DATA STALE", trading_date, fg.get("reason", ""), state_path, report)
-        _write_report(art_path, report); raise SystemExit(1)
+        reason = str(fg.get("reason", ""))
+        report["signals_generated"] = 0
+        if reason in ("NON_TRADING_DAY",) or (reason.startswith("STALE") and mode == "PAPER"):
+            report["status"] = "BLOCKED_FRESHNESS"
+            _write_report(art_path, report)
+            print(json.dumps(report, indent=2, default=str))
+            raise SystemExit(0)
+        report["status"] = "HALTED_STALE_DATA"
+        _notify_halt(mode, "DATA STALE", trading_date, reason, state_path, report)
+        _write_report(art_path, report)
+        print(json.dumps(report, indent=2, default=str))
+        raise SystemExit(1)
 
     pf_store = PaperPortfolioStore(state_path / "paper_portfolio.json", archive_dir=state_path / "sessions")
     report["reset_portfolio"] = bool(reset_portfolio)
@@ -203,7 +216,7 @@ def run(
     except Exception as e:
         report.update({"status": "HALTED_CORRUPT_PORTFOLIO", "error": str(e), "signals_generated": 0})
         _notify_halt(mode, "CORRUPTED PORTFOLIO STATE", trading_date, str(e), state_path, report)
-        _write_report(art_path, report); raise SystemExit(1)
+        _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(1)
     report["simulation_session_id"] = pf.simulation_session_id
 
     all_sig = _naive_signals_from_bars(bars)
@@ -251,7 +264,7 @@ def run(
         pf_store.save_atomic(pf); report["persistence_status"] = "PASS"
     except Exception as e:
         report.update({"persistence_status": "FAIL", "status": "HALTED_PERSISTENCE", "error": str(e)})
-        _write_report(art_path, report); raise SystemExit(1)
+        _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(1)
     report["paper_portfolio"] = portfolio_summary(pf, marks)
     report["paper_fill_classifications"] = fills_cls
     rr = assess_readiness(
@@ -273,7 +286,7 @@ def run(
     if nstore.is_corrupt:
         report["status"] = "HALTED_CORRUPT_STATE"
         _notify_halt(mode, "STATE CORRUPTION", trading_date, "notify_state corrupt", state_path, report)
-        _write_report(art_path, report); raise SystemExit(1)
+        _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(1)
     notified = already = 0
     allow_tg, tg_reason = _telegram_enabled(mode)
     report["telegram_enable_reason"] = tg_reason
