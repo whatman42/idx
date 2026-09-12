@@ -78,6 +78,12 @@ jobs:
           if [ "${{ github.event_name }}" = "schedule" ]; then RESET="false"; fi
           echo "reset=$RESET" >> "$GITHUB_OUTPUT"
 
+      - name: Fetch public OHLCV (research-grade)
+        if: steps.mode.outputs.mode != 'TEST'
+        run: |
+          python -m src.python.ops.fetch_ohlcv --symbols "${{ github.event.inputs.symbols || 'BBCA,BBRI,TLKM' }}" --out data/ops/ohlcv.csv --period 6mo
+        continue-on-error: false
+
       - name: Run signal bot
         run: |
           FORCE="${{ github.event.inputs.force_schedule }}"
