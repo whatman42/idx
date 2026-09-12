@@ -20,6 +20,7 @@ from src.python.ops.paper_portfolio import (
     mark_to_market, new_session, summary as portfolio_summary, paper_reset_scope,
 )
 from src.python.validation.economic_sim import simulate_long_only
+from src.python.ops.readiness import assess_readiness
 
 app = typer.Typer(add_completion=False)
 JKT = ZoneInfo("Asia/Jakarta")
@@ -46,7 +47,7 @@ def _load_bars(mode: str, csv_path: Optional[str], symbols: list[str]):
     if mode == "TEST" and not csv_path:
         c = SyntheticProvider(n=80, seed=42).fetch(symbols or ["BBCA", "BBRI", "TLKM"])
         return c.df, c.source, hashlib.sha256(c.df.to_csv(index=False).encode()).hexdigest()
-    if csv_path:
+    if csv_path and Path(csv_path).exists():
         p = Path(csv_path); df = pd.read_csv(p)
         if "timestamp" in df.columns: df["timestamp"] = pd.to_datetime(df["timestamp"])
         if symbols and "symbol" in df.columns: df = df[df["symbol"].isin(symbols)]
@@ -55,9 +56,19 @@ def _load_bars(mode: str, csv_path: Optional[str], symbols: list[str]):
     if env_csv and Path(env_csv).exists():
         p = Path(env_csv); df = pd.read_csv(p)
         if "timestamp" in df.columns: df["timestamp"] = pd.to_datetime(df["timestamp"])
+        if symbols and "symbol" in df.columns: df = df[df["symbol"].isin(symbols)]
         return df, f"csv:{p.name}", _sha_file(p)
+    if mode in ("PAPER", "OPERATIONAL") or os.getenv("IDX_ALLOW_YFINANCE", "") == "1":
+        try:
+            from src.python.market.yfinance_provider import YFinanceProvider
+            c = YFinanceProvider(period=os.getenv("IDX_YF_PERIOD", "6mo")).fetch(symbols or ["BBCA", "BBRI", "TLKM"])
+            h = hashlib.sha256(c.df.to_csv(index=False).encode()).hexdigest()
+            return c.df, c.source, h
+        except Exception as e:
+            if mode == "OPERATIONAL":
+                raise RuntimeError(f"OPERATIONAL data fetch failed: {e}") from e
     if mode == "OPERATIONAL":
-        raise RuntimeError("OPERATIONAL requires IDX_CSV_PATH or --csv")
+        raise RuntimeError("OPERATIONAL requires IDX_CSV_PATH, --csv, or yfinance public fetch")
     c = SyntheticProvider(n=80, seed=42).fetch(symbols or ["BBCA"])
     return c.df, c.source, hashlib.sha256(c.df.to_csv(index=False).encode()).hexdigest()
 
@@ -224,6 +235,20 @@ def run(
         _write_report(art_path, report); raise SystemExit(1)
     report["paper_portfolio"] = portfolio_summary(pf, marks)
     report["paper_fill_classifications"] = fills_cls
+    rr = assess_readiness(
+        signal_bot_ok=True,
+        paper_portfolio_ok=report.get("persistence_status") == "PASS",
+        data_source=str(report.get("data_source", "")),
+        dq_pass=report.get("dq_status") == "PASS",
+        freshness_status=str((report.get("freshness") or {}).get("status", "")),
+        cost_status="UNVERIFIED_ASSUMPTION",
+        edge_status="UNVERIFIED",
+        multi_day_paper_ok=False,
+    )
+    report["readiness"] = rr.to_dict()
+    report["production_ready"] = bool(rr.production_ready)
+    report["production_ready_100pct"] = bool(rr.production_ready_100pct)
+    report["economic_edge"] = rr.economic_edge
 
     nstore = NotifyStateStore(state_path / "notify_state.json")
     if nstore.is_corrupt:
@@ -234,6 +259,8 @@ def run(
     allow_tg, tg_reason = _telegram_enabled(mode)
     report["telegram_enable_reason"] = tg_reason
     if not signal_payloads:
+        report["production_ready"] = False
+        report["production_ready_100pct"] = False
         report.update({"status": "NO_SIGNAL", "signals_notified": 0, "telegram_status": "NO_SIGNAL"})
         _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(0)
     to_send = []
