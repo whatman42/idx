@@ -1,0 +1,9 @@
+[project]
+name = "idx"
+version = "0.8.0"
+description = "IDX signal-only engine + paper portfolio"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
