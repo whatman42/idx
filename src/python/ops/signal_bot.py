@@ -1,4 +1,6 @@
-"""IDX operational signal bot — SIGNAL ONLY + continuous paper portfolio (Rp10M)."""
+"""IDX operational signal bot — SIGNAL ONLY + continuous paper portfolio (Rp10M).
+Default scan: FULL IDX universe (symbols=ALL).
+"""
 from __future__ import annotations
 import hashlib, json, os
 from datetime import datetime, timezone
@@ -11,6 +13,7 @@ from src.python.data.costs import CostModel
 from src.python.data.quality import validate_ohlcv
 from src.python.market.providers import SyntheticProvider
 from src.python.market.calendar import is_trading_day
+from src.python.market.universe import resolve_symbols, universe_meta
 from src.python.notify.telegram import TelegramProvider
 from src.python.ops.notify_state import NotifyStateStore
 from src.python.ops.telegram_format import format_halt_message, format_signal_message, notification_id
@@ -45,7 +48,9 @@ def _is_market_hours_ok(*, force: bool = False) -> tuple[bool, str]:
 
 def _load_bars(mode: str, csv_path: Optional[str], symbols: list[str]):
     if mode == "TEST" and not csv_path:
-        c = SyntheticProvider(n=80, seed=42).fetch(symbols or ["BBCA", "BBRI", "TLKM"])
+        # TEST uses small synthetic subset even if ALL requested (speed)
+        test_syms = symbols[:5] if symbols else ["BBCA", "BBRI", "TLKM"]
+        c = SyntheticProvider(n=80, seed=42).fetch(test_syms)
         return c.df, c.source, hashlib.sha256(c.df.to_csv(index=False).encode()).hexdigest()
     if csv_path and Path(csv_path).exists():
         p = Path(csv_path); df = pd.read_csv(p)
@@ -61,7 +66,7 @@ def _load_bars(mode: str, csv_path: Optional[str], symbols: list[str]):
     if mode in ("PAPER", "OPERATIONAL") or os.getenv("IDX_ALLOW_YFINANCE", "") == "1":
         try:
             from src.python.market.yfinance_provider import YFinanceProvider
-            c = YFinanceProvider(period=os.getenv("IDX_YF_PERIOD", "6mo")).fetch(symbols or ["BBCA", "BBRI", "TLKM"])
+            c = YFinanceProvider(period=os.getenv("IDX_YF_PERIOD", "3mo"), batch_size=int(os.getenv("IDX_YF_BATCH", "80"))).fetch(symbols)
             h = hashlib.sha256(c.df.to_csv(index=False).encode()).hexdigest()
             return c.df, c.source, h
         except Exception as e:
@@ -69,7 +74,7 @@ def _load_bars(mode: str, csv_path: Optional[str], symbols: list[str]):
                 raise RuntimeError(f"OPERATIONAL data fetch failed: {e}") from e
     if mode == "OPERATIONAL":
         raise RuntimeError("OPERATIONAL requires IDX_CSV_PATH, --csv, or yfinance public fetch")
-    c = SyntheticProvider(n=80, seed=42).fetch(symbols or ["BBCA"])
+    c = SyntheticProvider(n=80, seed=42).fetch((symbols or ["BBCA"])[:5])
     return c.df, c.source, hashlib.sha256(c.df.to_csv(index=False).encode()).hexdigest()
 
 def _naive_signals_from_bars(bars: pd.DataFrame, *, lookback: int = 20) -> pd.DataFrame:
@@ -126,7 +131,7 @@ def _notify_halt(mode, reason, trading_date, details, state_path, report):
 def run(
     mode: str = typer.Option("TEST"),
     csv: Optional[str] = typer.Option(None),
-    symbols: str = typer.Option("BBCA,BBRI,TLKM"),
+    symbols: str = typer.Option("ALL", help="ALL = full IDX universe, or comma list"),
     state_dir: str = typer.Option("state/ops"),
     artifact_dir: str = typer.Option("artifacts/ops"),
     force_schedule: bool = typer.Option(False),
@@ -141,7 +146,8 @@ def run(
     if mode not in VALID_MODES: raise typer.BadParameter(str(VALID_MODES))
     run_id = f"ops_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
     trading_date = _trading_date_jkt()
-    syms = [s.strip() for s in symbols.split(",") if s.strip()]
+    syms = resolve_symbols(symbols)
+    u_meta = universe_meta()
     state_path = Path(state_dir); state_path.mkdir(parents=True, exist_ok=True)
     art_path = Path(artifact_dir); art_path.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
@@ -150,6 +156,9 @@ def run(
         "git_commit": os.getenv("GITHUB_SHA", "")[:40], "timezone": "Asia/Jakarta",
         "signal_only": True, "live_execution": False,
         "economic_edge": "UNVERIFIED", "production_ready": False, "strategy_changed": False,
+        "universe_source": u_meta.get("source"), "universe_count": u_meta.get("count"),
+        "symbols_requested_count": len(syms),
+        "scan_mode": "FULL_UNIVERSE" if len(syms) > 50 else "SUBSET",
     }
     ok_sched, sched_reason = _is_market_hours_ok(force=force_schedule or mode == "TEST")
     report["schedule"] = {"ok": ok_sched, "reason": sched_reason}
@@ -163,6 +172,7 @@ def run(
         _write_report(art_path, report); raise SystemExit(1)
     report["data_source"] = source; report["data_hash"] = data_hash
     report["symbols"] = sorted(bars["symbol"].astype(str).unique().tolist()) if "symbol" in bars.columns else syms
+    report["symbols_loaded_count"] = len(report["symbols"])
     report["rows"] = len(bars)
     q = validate_ohlcv(bars)
     report["dq_status"] = "PASS" if q.ok else "FAIL"
@@ -211,18 +221,27 @@ def run(
     report["safety_status"] = "PASS"
     signal_payloads = [{"symbol": str(r["symbol"]), "side_label": "BUY", "signal": "BUY",
         "confidence": float(r.get("confidence", 0.5)), "risk": "PASS", "rrr": None} for _, r in long_sig.iterrows()]
+    signal_payloads = sorted(signal_payloads, key=lambda x: float(x.get("confidence") or 0), reverse=True)
+    report["signals_scanned"] = int(len(signal_payloads))
+    max_notify = int(os.getenv("IDX_MAX_NOTIFY_SIGNALS", "20"))
+    max_portfolio = int(os.getenv("IDX_MAX_PORTFOLIO_ENTRIES", "15"))
+    notify_payloads = signal_payloads[:max_notify]
+    portfolio_candidates = signal_payloads[:max_portfolio]
 
     marks = {}
+    last_ts = {}
     if not bars.empty:
         for _, row in bars.sort_values("timestamp").groupby("symbol").tail(1).iterrows():
             marks[str(row["symbol"])] = float(row["close"])
+            last_ts[str(row["symbol"])] = str(row["timestamp"])
     fills_cls = []
-    for _, r in long_sig.iterrows():
-        sym, ts = str(r["symbol"]), str(r["timestamp"])
+    for s in portfolio_candidates:
+        sym = str(s["symbol"])
+        ts = last_ts.get(sym, trading_date)
         sid = f"sig_{trading_date}_{sym}_{model_version}"
         px = float(marks.get(sym, 0.0))
         if px <= 0: fills_cls.append("SKIPPED_INVALID_DATA"); continue
-        pf, trade, cls = apply_long_entry(pf, symbol=sym, price=px, weight=0.10, signal_id=sid, timestamp=ts,
+        pf, trade, cls = apply_long_entry(pf, symbol=sym, price=px, weight=0.05, signal_id=sid, timestamp=ts,
             fee_bps=fee_bps, slippage_bps=slippage_bps)
         fills_cls.append(cls)
     pf = mark_to_market(pf, marks, trading_date)
@@ -258,13 +277,13 @@ def run(
     notified = already = 0
     allow_tg, tg_reason = _telegram_enabled(mode)
     report["telegram_enable_reason"] = tg_reason
-    if not signal_payloads:
+    if not notify_payloads:
         report["production_ready"] = False
         report["production_ready_100pct"] = False
         report.update({"status": "NO_SIGNAL", "signals_notified": 0, "telegram_status": "NO_SIGNAL"})
         _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(0)
     to_send = []
-    for s in signal_payloads:
+    for s in notify_payloads:
         nid = notification_id(trading_date=trading_date, symbol=s["symbol"], signal_type="BUY", model_version=model_version)
         s["notification_id"] = nid
         if nstore.was_notified(nid):
