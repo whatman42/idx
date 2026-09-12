@@ -1,0 +1,111 @@
+# IDX Signal-Only Bot — continuous paper portfolio (Rp10M)
+# Schedule: Mon–Fri 09:30 UTC = 16:30 Asia/Jakarta
+# NO live trading
+
+name: IDX Signal Bot
+
+on:
+  schedule:
+    - cron: "30 9 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "TEST | PAPER | OPERATIONAL"
+        required: true
+        default: "TEST"
+        type: choice
+        options: [TEST, PAPER, OPERATIONAL]
+      force_schedule:
+        description: "Bypass Asia/Jakarta EOD window"
+        required: false
+        default: true
+        type: boolean
+      symbols:
+        description: "Comma-separated symbols"
+        required: false
+        default: "BBCA,BBRI,TLKM"
+      reset_portfolio:
+        description: "EXPLICIT reset paper portfolio to Rp10M (new session). Default false."
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: idx-operational
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      IDX_CSV_PATH: ${{ github.workspace }}/data/ops/ohlcv.csv
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prepare dirs
+        run: mkdir -p data/ops state/ops artifacts/ops
+
+      - name: Resolve mode
+        id: mode
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          if [ -z "$MODE" ]; then MODE="OPERATIONAL"; fi
+          if [ "${{ github.event_name }}" = "schedule" ]; then MODE="OPERATIONAL"; fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          RESET="${{ github.event.inputs.reset_portfolio }}"
+          if [ -z "$RESET" ]; then RESET="false"; fi
+          if [ "${{ github.event_name }}" = "schedule" ]; then RESET="false"; fi
+          echo "reset=$RESET" >> "$GITHUB_OUTPUT"
+
+      - name: Run signal bot
+        run: |
+          FORCE="${{ github.event.inputs.force_schedule }}"
+          if [ "${{ github.event_name }}" = "schedule" ]; then FORCE=false; fi
+          if [ -z "$FORCE" ]; then FORCE=true; fi
+          ARGS=(--mode "${{ steps.mode.outputs.mode }}" --symbols "${{ github.event.inputs.symbols || 'BBCA,BBRI,TLKM' }}" --state-dir state/ops --artifact-dir artifacts/ops)
+          if [ "$FORCE" = "true" ]; then ARGS+=(--force-schedule); fi
+          if [ "${{ steps.mode.outputs.reset }}" = "true" ]; then ARGS+=(--reset-portfolio); fi
+          if [ -f "$IDX_CSV_PATH" ]; then ARGS+=(--csv "$IDX_CSV_PATH"); fi
+          python -m src.python.ops.signal_bot "${ARGS[@]}"
+
+      - name: Persist portfolio state to repository
+        if: always() && (steps.mode.outputs.mode == 'OPERATIONAL' || steps.mode.outputs.mode == 'PAPER')
+        run: |
+          if [ -f state/ops/paper_portfolio.json ]; then
+            git config user.name "idx-ops-bot"
+            git config user.email "idx-ops-bot@users.noreply.github.com"
+            git add state/ops/paper_portfolio.json state/ops/notify_state.json state/ops/sessions || true
+            git diff --staged --quiet || git commit -m "chore(ops): persist paper portfolio state [skip ci]"
+            git push || echo "WARN: state push failed — artifact still uploaded"
+          fi
+
+      - name: Upload operational report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: idx-ops-report-${{ github.run_id }}
+          path: |
+            artifacts/ops/
+            state/ops/
+          if-no-files-found: warn
