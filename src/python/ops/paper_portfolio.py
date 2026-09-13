@@ -10,12 +10,12 @@ from typing import Any, Optional
 
 SCHEMA_VERSION = "ops_paper_v1"
 DEFAULT_INITIAL_CAPITAL = 10_000_000.0
-PROTECTED_FROM_PAPER_RESET = ("models/", "state/training_runs/", "state/governor/", "state/learning/", "state/calibration/", "artifacts/real_idx_oos/", "src/python/")
+PROTECTED_FROM_PAPER_RESET = ("models/", "state/training_runs/", "state/governor/", "state/learning/", "state/calibration/", "state/ops/shadow/", "artifacts/real_idx_oos/", "src/python/")
 
 def paper_reset_scope() -> dict:
     return {"resets": "PAPER_ACCOUNT_STATE_ONLY",
             "fields": ["simulation_session_id", "cash", "positions", "equity", "realized_pnl", "drawdown"],
-            "preserved": ["ML models and weights", "calibration", "online/adaptive learning", "Governor evidence/history", "research/OOS evidence", "strategy config", "risk config", "production model pointer"],
+            "preserved": ["ML models and weights", "calibration", "online/adaptive learning", "Governor evidence/history", "shadow challenger evidence", "research/OOS evidence", "strategy config", "risk config", "production model pointer"],
             "does_not": ["retrain", "delete models", "clear calibration", "clear learner", "clear performance history", "change production pointer", "change strategy", "change Governor policy"],
             "protected_path_prefixes": list(PROTECTED_FROM_PAPER_RESET)}
 
