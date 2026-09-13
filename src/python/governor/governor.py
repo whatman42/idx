@@ -1,4 +1,4 @@
-"""Adaptive ML Governor — selects diverse lightweight families under budget."""
+"""Adaptive ML Governor — selects diverse lightweight families and feature tiers under budget."""
 from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,4 +65,31 @@ class MLGovernor:
             "remaining_sec": remaining,
             "policy": "one_model_per_family",
             "families_available": [f.value for f in TRAINABLE_FAMILIES],
+        }
+
+    def feature_plan(self, remaining_sec: float, *, dq_ok: bool = True) -> dict[str, Any]:
+        """Select feature tier under budget. Never bypasses DQ hard stop."""
+        remaining = float(remaining_sec)
+        if not dq_ok:
+            return {
+                "allow_features": False,
+                "max_tier": -1,
+                "reason": "dq_blocked",
+                "remaining_sec": remaining,
+            }
+        if remaining < 20:
+            return {"allow_features": False, "max_tier": -1, "reason": "budget_too_low", "remaining_sec": remaining}
+        if remaining < 90:
+            tier = 0
+        elif remaining < 300:
+            tier = 1
+        else:
+            tier = 2
+        return {
+            "allow_features": True,
+            "max_tier": tier,
+            "tier_name": {0: "TIER0_CORE", 1: "TIER1_STANDARD", 2: "TIER2_ADVANCED"}[tier],
+            "remaining_sec": remaining,
+            "policy": "adaptive_feature_tier",
+            "note": "High hardware does not force max tier",
         }
