@@ -1,6 +1,10 @@
-"""Weekend training under hard deadline. Failure → production UNCHANGED."""
+"""Weekend training under hard deadline. Failure → production UNCHANGED.
+
+Trains diverse lightweight ML families selected by MLGovernor (no same-family twins).
+Never auto-promotes.
+"""
 from __future__ import annotations
-import json, os, time
+import json, os
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -20,9 +24,27 @@ def _stage_from_plan(stage: str) -> str:
         return "validation"
     return "exploration"
 
+def _load_bars_for_train(symbols: str):
+    import pandas as pd
+    csv = os.getenv("IDX_CSV_PATH", "data/ops/ohlcv.csv")
+    if csv and Path(csv).exists():
+        df = pd.read_csv(csv)
+        if "timestamp" in df.columns:
+            df["timestamp"] = pd.to_datetime(df["timestamp"])
+        return df, f"csv:{csv}"
+    from src.python.market.providers import SyntheticProvider
+    syms = [s.strip() for s in symbols.split(",") if s.strip()] or ["BBCA", "BBRI", "TLKM", "ASII", "ICBP"]
+    c = SyntheticProvider(n=120, seed=42).fetch(syms)
+    return c.df, c.source
+
+
 @app.command()
-def main(stage: str = typer.Option("auto"), budget_sec: int = typer.Option(1200),
-         out_dir: str = typer.Option("models/candidates")) -> None:
+def main(
+    stage: str = typer.Option("auto"),
+    budget_sec: int = typer.Option(1200),
+    out_dir: str = typer.Option("models/candidates"),
+    symbols: str = typer.Option("BBCA,BBRI,TLKM,ASII,ICBP,BMRI,BBNI,UNVR,KLBF,INDF"),
+) -> None:
     clock = SystemClock()
     deadline = TrainingDeadline(internal_budget_sec=budget_sec)
     deadline.start(clock)
@@ -65,8 +87,18 @@ def main(stage: str = typer.Option("auto"), budget_sec: int = typer.Option(1200)
         (runs_dir / f"{run_id.replace(':', '_')}.json").write_text(json.dumps(record, indent=2))
         print(json.dumps(record, indent=2))
         raise SystemExit(0)
-    record["status"] = "EXPLORED" if resolved == "exploration" else "TRAINED_NOT_PROMOTED"
-    record["reason"] = "restore_stub_no_auto_promote"
+
+    bars, source = _load_bars_for_train(symbols)
+    record["data_source"] = source
+    from src.python.ml.pipeline import run_lightweight_training
+    remaining = deadline.remaining_sec(clock)
+    train_report = run_lightweight_training(
+        bars, out_dir=out_dir, budget_sec=remaining, governor=gov,
+    )
+    record["train"] = train_report
+    record["status"] = train_report.get("status", "TRAINED_NOT_PROMOTED")
+    record["promoted"] = False
+    record["production_unchanged"] = True
     record["finished_at"] = clock.now().isoformat()
     (runs_dir / f"{run_id.replace(':', '_')}.json").write_text(json.dumps(record, indent=2, default=str))
     print(json.dumps(record, indent=2, default=str))
