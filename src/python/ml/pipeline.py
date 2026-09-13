@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 from src.python.governor.governor import MLGovernor, ResourceProfile
@@ -54,12 +55,42 @@ def run_lightweight_training(
         report["reason"] = "no_families_selected"
         return report
 
-    feat = build_feature_frame(bars)
-    if feat.empty or len(feat) < 50:
-        report["status"] = "DATA_INSUFFICIENT"
-        report["reason"] = f"feature_rows={len(feat)}"
+    from src.python.features.engine import build_features
+    from src.python.features.version import FEATURE_SET_VERSION
+    fplan = gov.feature_plan(budget_sec, dq_ok=True)
+    report["feature_plan"] = fplan
+    report["feature_set_version"] = FEATURE_SET_VERSION
+    if not fplan.get("allow_features"):
+        report["status"] = "SKIPPED"
+        report["reason"] = fplan.get("reason", "feature_plan_blocked")
         return report
-    X, y, _ = xy_split(feat)
+    max_tier = int(fplan.get("max_tier", 0))
+    built = build_features(bars, max_tier=max_tier)
+    feat = built.df
+    if "y_next_up" not in feat.columns or feat.empty or len(feat) < 50:
+        feat = build_feature_frame(bars)
+        if feat.empty or len(feat) < 50:
+            report["status"] = "DATA_INSUFFICIENT"
+            report["reason"] = f"feature_rows={len(feat)}"
+            return report
+        X, y, _ = xy_split(feat)
+        report["feature_source"] = "legacy_ml_features"
+    else:
+        feat = feat.dropna(subset=["y_next_up"]).reset_index(drop=True)
+        num_cols = [
+            c for c in built.feature_names
+            if c in feat.columns and pd.api.types.is_numeric_dtype(feat[c])
+        ]
+        if len(num_cols) < 3:
+            feat2 = build_feature_frame(bars)
+            X, y, _ = xy_split(feat2)
+            report["feature_source"] = "legacy_ml_features_fallback"
+        else:
+            X = feat[num_cols].to_numpy(dtype=float)
+            X = np.nan_to_num(X, nan=0.0, posinf=0.0, neginf=0.0)
+            y = feat["y_next_up"].to_numpy(dtype=int)
+            report["feature_source"] = "institutional_v1"
+            report["feature_names_used"] = num_cols
     report["n_rows"] = int(len(y))
     report["n_features"] = int(X.shape[1])
 
