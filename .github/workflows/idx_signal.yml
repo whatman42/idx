@@ -45,6 +45,9 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GEMINI_MODEL: gemini-3.5-flash-lite
+      IDX_TELEGRAM_ALLOW_PAPER: "1"
       IDX_CSV_PATH: ${{ github.workspace }}/data/ops/ohlcv.csv
       PYTHONUNBUFFERED: "1"
       IDX_MAX_NOTIFY_SIGNALS: "20"

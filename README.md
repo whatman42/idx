@@ -32,3 +32,14 @@ python -m src.python.ops.signal_bot --mode PAPER --force-schedule --symbols ALL
 
 `.github/workflows/idx_signal.yml` — Mon–Fri 16:30 WIB, timeout 45m.
 PAPER/OPERATIONAL fetches full-universe OHLCV before the bot.
+
+## Telegram narration (Gemini 3.5 Flash-Lite)
+
+Every Telegram message (signals, **no signal**, halt) is narrated by Gemini.
+
+Secrets / vars:
+- `GEMINI_API_KEY` (required for live narration; otherwise template fallback)
+- `GEMINI_MODEL` (default `gemini-3.5-flash-lite`)
+- `IDX_TELEGRAM_ALLOW_PAPER=1` to allow PAPER-mode Telegram
+
+Narrator is **advisory only** — does not change signals, portfolio, or production pointer.
