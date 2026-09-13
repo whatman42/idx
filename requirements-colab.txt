@@ -1,0 +1,4 @@
+# Optional extras for Colab research runtime (CPU-safe base remains requirements.txt)
+psutil>=5.9
+# torch is optional for CUDA probe only; install manually in Colab if desired:
+# pip install torch --index-url https://download.pytorch.org/whl/cu118
