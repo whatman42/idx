@@ -1,0 +1,95 @@
+"""Governor-driven multi-family lightweight training pipeline."""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any, Optional, Sequence
+
+import pandas as pd
+
+from src.python.governor.governor import MLGovernor, ResourceProfile
+from src.python.ml.families import ModelFamily
+from src.python.ml.features import build_feature_frame, xy_split
+from src.python.ml.models import train_family
+from src.python.registry.promotion import evaluate_promotion
+
+
+def run_lightweight_training(
+    bars: pd.DataFrame,
+    *,
+    out_dir: str | Path = "models/candidates",
+    budget_sec: float = 1200.0,
+    governor: Optional[MLGovernor] = None,
+    families: Optional[Sequence[ModelFamily]] = None,
+) -> dict[str, Any]:
+    gov = governor or MLGovernor(resources=ResourceProfile.detect())
+    gov.resources.training_budget_sec = budget_sec
+    plan = gov.training_plan(budget_sec)
+    selected = list(families) if families is not None else list(plan.get("families") or [])
+    seen = set()
+    unique: list[ModelFamily] = []
+    for f in selected:
+        if isinstance(f, str):
+            f = ModelFamily(f)
+        if f in seen:
+            continue
+        seen.add(f)
+        unique.append(f)
+
+    report: dict[str, Any] = {
+        "status": "RUNNING",
+        "plan": plan,
+        "families_selected": [f.value for f in unique],
+        "results": [],
+        "promoted": False,
+        "production_unchanged": True,
+        "policy": "no_auto_promote_diverse_lightweight",
+    }
+    if not plan.get("allow_train"):
+        report["status"] = "SKIPPED"
+        report["reason"] = plan.get("reason") or "budget_too_low"
+        return report
+    if not unique:
+        report["status"] = "SKIPPED"
+        report["reason"] = "no_families_selected"
+        return report
+
+    feat = build_feature_frame(bars)
+    if feat.empty or len(feat) < 50:
+        report["status"] = "DATA_INSUFFICIENT"
+        report["reason"] = f"feature_rows={len(feat)}"
+        return report
+    X, y, _ = xy_split(feat)
+    report["n_rows"] = int(len(y))
+    report["n_features"] = int(X.shape[1])
+
+    results = []
+    for fam in unique:
+        try:
+            tr = train_family(fam, X, y, out_dir=out_dir)
+            promo = evaluate_promotion(tr.metrics)
+            results.append({
+                "family": tr.family,
+                "model_id": tr.model_id,
+                "model_version": tr.model_version,
+                "metrics": tr.metrics,
+                "path": tr.path,
+                "status": tr.status,
+                "train_sec": tr.train_sec,
+                "promotion_approved": promo.approved,
+                "promotion_reason": promo.reason,
+            })
+        except Exception as e:
+            results.append({
+                "family": fam.value,
+                "status": "TRAIN_FAILED",
+                "error": f"{type(e).__name__}: {e}"[:300],
+                "promotion_approved": False,
+            })
+    report["results"] = results
+    report["status"] = "TRAINED_NOT_PROMOTED" if results else "EMPTY"
+    report["promoted"] = False
+    report["production_unchanged"] = True
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    (Path(out_dir) / "last_training_report.json").write_text(json.dumps(report, indent=2, default=str))
+    return report

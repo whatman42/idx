@@ -12,11 +12,11 @@ def evaluate_promotion(metrics: dict[str, Any], *, min_accuracy: float = 0.52,
                        min_calibration_ok: bool = True) -> PromotionReport:
     acc = float(metrics.get("accuracy", 0) or 0)
     exp = float(metrics.get("expectancy", 0) or 0)
-    dd = float(metrics.get("max_drawdown", 1) or 1)
+    raw_dd = metrics.get("max_drawdown", None)
     if acc < min_accuracy:
         return PromotionReport(False, f"accuracy_below_{min_accuracy}")
     if exp < min_expectancy:
         return PromotionReport(False, "expectancy_non_positive")
-    if dd > max_drawdown:
+    if raw_dd is not None and float(raw_dd) > max_drawdown:
         return PromotionReport(False, "drawdown_exceeded")
     return PromotionReport(False, "default_promote_false")
