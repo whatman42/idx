@@ -43,3 +43,17 @@ Secrets / vars:
 - `IDX_TELEGRAM_ALLOW_PAPER=1` to allow PAPER-mode Telegram
 
 Narrator is **advisory only** — does not change signals, portfolio, or production pointer.
+
+## Compute surfaces
+
+| Surface | Role |
+|---------|------|
+| GitHub Actions | Daily **operational** signals + paper portfolio (`ops_sma_v0`) |
+| [Google Colab](colab/IDX_GPU_TRAINING.ipynb) | Weekend/heavy **candidate** training (Governor-gated, no auto-promote) |
+| Telegram | Notifications only |
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/whatman42/idx/blob/main/colab/IDX_GPU_TRAINING.ipynb)
+
+- Default training budget: `COLAB_TRAINING_BUDGET_SEC=1200`
+- GPU is **optional**; CPU fallback is always supported
+- Economic edge remains **UNVERIFIED** until valid forward/OOS evidence
