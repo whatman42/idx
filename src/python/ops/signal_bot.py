@@ -1,5 +1,6 @@
 """IDX operational signal bot — SIGNAL ONLY + continuous paper portfolio (Rp10M).
 Default scan: FULL IDX universe (symbols=ALL).
+Telegram: every message narrated by Gemini (incl. no-signal).
 """
 from __future__ import annotations
 import hashlib, json, os
@@ -16,7 +17,7 @@ from src.python.market.calendar import is_trading_day
 from src.python.market.universe import resolve_symbols, universe_meta
 from src.python.notify.telegram import TelegramProvider
 from src.python.ops.notify_state import NotifyStateStore
-from src.python.ops.telegram_format import format_halt_message, format_signal_message, notification_id
+from src.python.ops.telegram_format import notification_id
 from src.python.ops.freshness import freshness_gate
 from src.python.ops.paper_portfolio import (
     DEFAULT_INITIAL_CAPITAL, PaperPortfolioStore, apply_long_entry,
@@ -24,6 +25,7 @@ from src.python.ops.paper_portfolio import (
 )
 from src.python.validation.economic_sim import simulate_long_only
 from src.python.ops.readiness import assess_readiness
+from src.python.llm.gemini_narrator import narrate_signals, narrate_no_signal, narrate_halt
 
 app = typer.Typer(add_completion=False)
 JKT = ZoneInfo("Asia/Jakarta")
@@ -115,16 +117,24 @@ def _send_plain(provider: TelegramProvider, text: str) -> None:
 def _notify_halt(mode, reason, trading_date, details, state_path, report):
     allow, why = _telegram_enabled(mode)
     report["telegram_enable_reason"] = why
+    narration = narrate_halt(
+        trading_date=trading_date, mode=mode, reason=reason, details=details, report=report,
+    )
+    report["telegram_narration"] = {
+        "kind": "halt", "narrator": narration.get("narrator"), "fallback": narration.get("fallback"),
+        "model": narration.get("model"), "reason": narration.get("reason"),
+    }
     if not allow:
         report["telegram_status"] = "DISABLED"; return
     provider = TelegramProvider.from_env()
     if provider is None:
         report["telegram_status"] = "TELEGRAM_DISABLED"; return
     try:
-        _send_plain(provider, format_halt_message(reason=reason, trading_date=trading_date, details=details))
+        _send_plain(provider, narration["text"])
         report["telegram_status"] = "HALT_SENT"
-    except Exception:
+    except Exception as e:
         report["telegram_status"] = "HALT_FAILED"
+        report["telegram_error"] = type(e).__name__
 
 @app.command()
 def run(
@@ -293,7 +303,27 @@ def run(
     if not notify_payloads:
         report["production_ready"] = False
         report["production_ready_100pct"] = False
-        report.update({"status": "NO_SIGNAL", "signals_notified": 0, "telegram_status": "NO_SIGNAL"})
+        report["status"] = report.get("status") or "NO_SIGNAL"
+        report["signals_notified"] = 0
+        narration = narrate_no_signal(trading_date=trading_date, mode=mode, report=report)
+        report["telegram_narration"] = {
+            "kind": "no_signal", "narrator": narration.get("narrator"),
+            "fallback": narration.get("fallback"), "model": narration.get("model"),
+            "reason": narration.get("reason"),
+        }
+        if allow_tg:
+            provider = TelegramProvider.from_env()
+            if provider is None:
+                report["telegram_status"] = "TELEGRAM_DISABLED"
+            else:
+                try:
+                    _send_plain(provider, narration["text"])
+                    report["telegram_status"] = "NO_SIGNAL_SENT"
+                except Exception as e:
+                    report["telegram_status"] = "NO_SIGNAL_SEND_FAILED"
+                    report["telegram_error"] = type(e).__name__
+        else:
+            report["telegram_status"] = "NO_SIGNAL_SUPPRESSED"
         _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(0)
     to_send = []
     for s in notify_payloads:
@@ -306,14 +336,32 @@ def run(
     provider = TelegramProvider.from_env() if allow_tg else None
     tg_status = "TELEGRAM_DISABLED" if provider is None else ("ALREADY_NOTIFIED" if not to_send else "DISABLED")
     if provider and to_send:
-        text = format_signal_message(trading_date=trading_date, signals=to_send,
-            portfolio={"cash": report["paper_portfolio"].get("cash"), "equity": report["paper_portfolio"].get("equity"),
-                "exposure": report["paper_portfolio"].get("exposure"),
-                "positions": len(report["paper_portfolio"].get("open_positions") or {}),
-                "initial_capital": report["paper_portfolio"].get("initial_capital")},
-            governor=report["governor_action"], dq=report["dq_status"], mode=mode)
+        pf = report.get("paper_portfolio") or {}
+        narration = narrate_signals(
+            trading_date=trading_date,
+            mode=mode,
+            signals=to_send,
+            portfolio={
+                "cash": pf.get("cash"), "equity": pf.get("equity"),
+                "exposure": pf.get("exposure"),
+                "positions": len(pf.get("open_positions") or {}),
+                "initial_capital": pf.get("initial_capital"),
+            },
+            governor=report.get("governor_action", ""),
+            dq=report.get("dq_status", ""),
+            extra={
+                "economic_edge": report.get("economic_edge"),
+                "data_source": report.get("data_source"),
+                "scan_mode": report.get("scan_mode"),
+            },
+        )
+        report["telegram_narration"] = {
+            "kind": "signals", "narrator": narration.get("narrator"),
+            "fallback": narration.get("fallback"), "model": narration.get("model"),
+            "reason": narration.get("reason"),
+        }
         try:
-            _send_plain(provider, text)
+            _send_plain(provider, narration["text"])
             for s in to_send:
                 nstore.mark(s["notification_id"], "NOTIFIED", {"trading_date": trading_date}); notified += 1
             tg_status = "SENT"
