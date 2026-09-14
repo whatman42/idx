@@ -27,6 +27,10 @@ from src.python.ops.paper_portfolio import (
 from src.python.validation.economic_sim import simulate_long_only
 from src.python.ops.readiness import assess_readiness
 from src.python.llm.gemini_narrator import narrate_signals, narrate_no_signal, narrate_halt
+from src.python.reporting.builder import build_buy_signal, build_cycle_report
+from src.python.reporting.finance import shares_from_lots, lots_from_shares, SHARES_PER_LOT
+from src.python.reporting.llm_boundary import safe_compose
+from src.python.reporting.validation import validate_cycle_report
 
 app = typer.Typer(add_completion=False)
 JKT = ZoneInfo("Asia/Jakarta")
@@ -254,7 +258,6 @@ def run(
             marks[str(row["symbol"])] = float(row["close"])
             last_ts[str(row["symbol"])] = str(row["timestamp"])
 
-    # 1) MTM then TP/SL exits → sync cash/equity
     pf = mark_to_market(pf, marks, trading_date)
     pf, exits = process_tp_sl_exits(pf, marks, trading_date, fee_bps=25.0, slippage_bps=slippage_bps)
     report["exits_today"] = exits
@@ -275,7 +278,6 @@ def run(
         })
     signal_payloads = sorted(signal_payloads, key=lambda x: float(x.get("confidence") or 0), reverse=True)
     report["signals_scanned"] = int(len(signal_payloads))
-    # TOP-1 only
     top1 = signal_payloads[:TOP_N_SIGNAL]
     notify_payloads = list(top1)
     portfolio_candidates = list(top1)
@@ -353,19 +355,42 @@ def run(
         report["production_ready_100pct"] = False
         report["status"] = report.get("status") or "NO_SIGNAL"
         report["signals_notified"] = 0
-        narration = narrate_no_signal(trading_date=trading_date, mode=mode, report=report)
-        report["telegram_narration"] = {
-            "kind": "no_signal", "narrator": narration.get("narrator"),
-            "fallback": narration.get("fallback"), "model": narration.get("model"),
-            "reason": narration.get("reason"),
-        }
+        pf_sum = report.get("paper_portfolio") or {}
+        cycle = build_cycle_report(
+            trading_date=trading_date,
+            mode=mode,
+            pf_summary=pf_sum,
+            signal=None,
+            exits=report.get("exits_today") or [],
+            marks=marks,
+            model_version=model_version,
+            governor_action=str(report.get("governor_action") or ""),
+            dq_status=str(report.get("dq_status") or ""),
+            data_source=str(report.get("data_source") or ""),
+            no_signal_reasons=["Tidak ada kandidat BUY top-1 yang lolos filter hari ini."],
+            status=str(report.get("status") or "NO_SIGNAL"),
+        )
+        report["cycle_report"] = cycle.to_dict()
+        llm_text = None
+        try:
+            narration = narrate_no_signal(trading_date=trading_date, mode=mode, report=report)
+            llm_text = narration.get("text")
+            report["telegram_narration"] = {
+                "kind": "no_signal", "narrator": narration.get("narrator"),
+                "fallback": narration.get("fallback"), "model": narration.get("model"),
+                "reason": narration.get("reason"),
+            }
+        except Exception as e:
+            report["telegram_narration"] = {"kind": "no_signal", "reason": type(e).__name__}
+        text_msg, src = safe_compose(cycle, llm_text=llm_text, llm_enabled=bool(llm_text))
+        report["telegram_composer_source"] = src
         if allow_tg:
             provider = TelegramProvider.from_env()
             if provider is None:
                 report["telegram_status"] = "TELEGRAM_DISABLED"
             else:
                 try:
-                    _send_plain(provider, narration["text"])
+                    _send_plain(provider, text_msg)
                     report["telegram_status"] = "NO_SIGNAL_SENT"
                 except Exception as e:
                     report["telegram_status"] = "NO_SIGNAL_SEND_FAILED"
@@ -384,43 +409,78 @@ def run(
     provider = TelegramProvider.from_env() if allow_tg else None
     tg_status = "TELEGRAM_DISABLED" if provider is None else ("ALREADY_NOTIFIED" if not to_send else "DISABLED")
     if provider and to_send:
-        pf = report.get("paper_portfolio") or {}
         pf_sum = report.get("paper_portfolio") or {}
-        dashboard_pf = {
-            "cash": pf_sum.get("cash"), "equity": pf_sum.get("equity"),
-            "exposure": pf_sum.get("exposure"),
-            "realized_pnl": pf_sum.get("realized_pnl"),
-            "unrealized_pnl": pf_sum.get("unrealized_pnl"),
-            "initial_capital": pf_sum.get("initial_capital"),
-            "open_positions": pf_sum.get("open_positions") or {},
-            "open_count": pf_sum.get("open_count", 0),
-            "last_event": pf_sum.get("last_event"),
-        }
-        narration = narrate_signals(
+        top = to_send[0]
+        shares = float(top.get("qty") or 0)
+        if shares <= 0 and top.get("lots"):
+            shares = shares_from_lots(float(top["lots"]))
+        sig = build_buy_signal(
+            signal_id=str(top.get("notification_id") or top.get("signal_id") or f"sig_{trading_date}_{top.get('symbol')}"),
+            timestamp=trading_date,
+            symbol=str(top["symbol"]),
+            entry_reference=float(top.get("entry_price") or top.get("price") or 0),
+            stop_loss=float(top.get("sl") or 0),
+            tp1=float(top.get("tp1") or 0) or (float(top.get("entry_price") or top.get("price") or 0) + (float(top.get("tp") or 0) - float(top.get("entry_price") or top.get("price") or 0)) * 0.5),
+            tp2=float(top.get("tp") or 0),
+            shares=shares,
+            equity=float(pf_sum.get("equity") or 0) or float(initial_capital),
+            confidence=float(top.get("confidence") or 0),
+            confidence_method="sma20_rank_score",
+            model_version=model_version,
+            explanation=[str(top.get("why") or "Ranking confidence vs SMA20")],
+            entry_low=float(top.get("entry_price") or top.get("price") or 0) * 0.995,
+            entry_high=float(top.get("entry_price") or top.get("price") or 0) * 1.0025,
+            fill_status=str(top.get("fill_status") or ""),
+        )
+        if sig.tp1 <= 0 and sig.tp2 > 0 and sig.entry_reference > 0:
+            sig.tp1 = sig.entry_reference + (sig.tp2 - sig.entry_reference) * 0.5
+        cycle = build_cycle_report(
             trading_date=trading_date,
             mode=mode,
-            signals=to_send,
-            portfolio=dashboard_pf,
-            governor=report.get("governor_action", ""),
-            dq=report.get("dq_status", ""),
-            extra={
-                "economic_edge": report.get("economic_edge"),
-                "data_source": report.get("data_source"),
-                "scan_mode": report.get("scan_mode"),
-                "exits": report.get("exits_today") or [],
-                "top_n": TOP_N_SIGNAL,
-            },
+            pf_summary=pf_sum,
+            signal=sig,
+            exits=report.get("exits_today") or [],
+            marks=marks,
+            model_version=model_version,
+            governor_action=str(report.get("governor_action") or ""),
+            dq_status=str(report.get("dq_status") or ""),
+            data_source=str(report.get("data_source") or ""),
+            status=str(report.get("status") or "SUCCESS"),
         )
-        report["telegram_narration"] = {
-            "kind": "signals", "narrator": narration.get("narrator"),
-            "fallback": narration.get("fallback"), "model": narration.get("model"),
-            "reason": narration.get("reason"),
-        }
+        report["cycle_report"] = cycle.to_dict()
+        report["integrity_ok"] = cycle.integrity_ok
+        report["integrity_errors"] = cycle.integrity_errors
+        llm_text = None
         try:
-            _send_plain(provider, narration["text"])
+            dashboard_pf = {
+                "cash": pf_sum.get("cash"), "equity": pf_sum.get("equity"),
+                "exposure": pf_sum.get("exposure"),
+                "realized_pnl": pf_sum.get("realized_pnl"),
+                "unrealized_pnl": pf_sum.get("unrealized_pnl"),
+                "initial_capital": pf_sum.get("initial_capital"),
+                "open_positions": pf_sum.get("open_positions") or {},
+            }
+            narration = narrate_signals(
+                trading_date=trading_date, mode=mode, signals=to_send,
+                portfolio=dashboard_pf, governor=report.get("governor_action", ""),
+                dq=report.get("dq_status", ""),
+                extra={"exits": report.get("exits_today") or [], "top_n": TOP_N_SIGNAL},
+            )
+            llm_text = narration.get("text")
+            report["telegram_narration"] = {
+                "kind": "signals", "narrator": narration.get("narrator"),
+                "fallback": narration.get("fallback"), "model": narration.get("model"),
+                "reason": narration.get("reason"),
+            }
+        except Exception as e:
+            report["telegram_narration"] = {"kind": "signals", "narrator": "skipped", "reason": type(e).__name__}
+        text, src = safe_compose(cycle, llm_text=llm_text, llm_enabled=bool(llm_text))
+        report["telegram_composer_source"] = src
+        try:
+            _send_plain(provider, text)
             for s in to_send:
                 nstore.mark(s["notification_id"], "NOTIFIED", {"trading_date": trading_date}); notified += 1
-            tg_status = "SENT"
+            tg_status = "SENT" if cycle.integrity_ok else "SENT_INTEGRITY_WARNING"
         except Exception as e:
             tg_status = "FAILED"; report["telegram_error"] = type(e).__name__
             report["status"] = "SIGNAL_OK_TELEGRAM_FAILED"
