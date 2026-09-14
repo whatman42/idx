@@ -19,6 +19,12 @@
 - **Economic edge** — remains **UNVERIFIED** until valid forward/OOS evidence
 - Paper reset ≠ model/Governor/shadow reset
 
+## Notebook notes
+
+- Clone cell uses **Python `subprocess`** (not `!git … -b $REF`) so `IDX_REF` / `IDX_REPO` env vars work reliably.
+- Cell 6 asserts: no promotion, pointer unchanged, edge UNVERIFIED, live_execution=false.
+- `promote=True` is still force-rejected inside `run_colab_training`.
+
 ## How to run
 
 1. Open the badge above (or File → Upload notebook from this folder).
