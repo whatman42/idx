@@ -8,7 +8,10 @@ from typing import Any, Optional
 
 SCHEMA_VERSION = "ops_paper_v2"
 DEFAULT_INITIAL_CAPITAL = 10_000_000.0
-DEFAULT_LOT_SIZE = 100.0
+try:
+    from src.python.reporting.finance import SHARES_PER_LOT as DEFAULT_LOT_SIZE
+except Exception:
+    DEFAULT_LOT_SIZE = 100.0  # 1 lot = 100 shares
 DEFAULT_SL_PCT = 0.03
 DEFAULT_TP_PCT = 0.06
 PROTECTED_FROM_PAPER_RESET = ("models/", "state/training_runs/", "state/governor/", "state/learning/", "state/calibration/", "state/ops/shadow/", "artifacts/real_idx_oos/", "src/python/")
