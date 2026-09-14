@@ -24,6 +24,7 @@ from src.python.reporting.validation import (
     validate_exit_report,
     validate_signal_report,
     validate_cycle_report,
+    validate_telegram_payload,
     ValidationError,
 )
 from src.python.reporting.composer import (
@@ -34,6 +35,13 @@ from src.python.reporting.llm_boundary import (
     validate_llm_output,
     LLMMutationError,
     safe_compose,
+)
+from src.python.reporting.builder import (
+    build_cycle_report,
+    build_buy_signal,
+    build_portfolio_snapshot,
+    build_open_position,
+    build_exit_from_trade,
 )
 
 __all__ = [
@@ -57,10 +65,16 @@ __all__ = [
     "validate_exit_report",
     "validate_signal_report",
     "validate_cycle_report",
+    "validate_telegram_payload",
     "ValidationError",
     "DeterministicComposer",
     "compose_telegram_message",
     "validate_llm_output",
     "LLMMutationError",
     "safe_compose",
+    "build_cycle_report",
+    "build_buy_signal",
+    "build_portfolio_snapshot",
+    "build_open_position",
+    "build_exit_from_trade",
 ]
