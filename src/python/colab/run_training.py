@@ -2,6 +2,9 @@
 
 Never auto-promotes. Never mutates production pointer.
 Hard budget via COLAB_TRAINING_BUDGET_SEC (default 1200).
+
+COLAB NEVER PROMOTES: the promote= argument is accepted for API compatibility
+but is always force-rejected (decision=REJECT).
 """
 from __future__ import annotations
 
@@ -117,6 +120,8 @@ def run_colab_training(
             "production_pointer_after": prod_before,
             "production_pointer_unchanged": True,
             "economic_edge": "UNVERIFIED",
+            "live_execution": False,
+            "signal_only": True,
         }
         _write_report(report_dir, report)
         return report
@@ -161,7 +166,7 @@ def run_colab_training(
             "production_unchanged": True,
         }
         promo = evaluate_promotion(r.get("metrics") or {})
-        meta["promotion"] = {"approved": promo.approved, "reason": promo.reason}
+        meta["promotion"] = {"approved": False, "reason": "colab_never_promotes", "metrics_eval": {"approved": promo.approved, "reason": promo.reason}}
         if meta_path:
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             existing = {}
@@ -176,8 +181,10 @@ def run_colab_training(
             existing["artifact_hash"] = meta["artifact_hash"]
             meta_path.write_text(json.dumps(existing, indent=2, default=str))
         artifacts.append(meta)
-        r["promotion_approved"] = False
-        r["promotion_reason"] = "colab_default_promote_false" if promote else promo.reason
+        r["promotion_approved"] = False  # Colab never promotes, even if promote=True
+        r["promotion_reason"] = (
+            "colab_force_reject_promote_requested" if promote else (promo.reason or "colab_default_promote_false")
+        )
 
     shadow_report = None
     if run_shadow and remaining > 30:
