@@ -98,3 +98,20 @@ def test_budget_env(monkeypatch, tmp_path):
     )
     assert report["budget"]["requested_sec"] == 45
     assert report["promoted"] is False
+
+
+def test_notebook_structure_and_clone_is_python_safe():
+    """Notebook must not rely on unexported $REF/$REPO shell expansion."""
+    nb = json.loads(Path("colab/IDX_GPU_TRAINING.ipynb").read_text())
+    cells = nb.get("cells") or []
+    assert len(cells) >= 6
+    joined = "\n".join(
+        "".join(c.get("source") or []) if isinstance(c.get("source"), list) else str(c.get("source") or "")
+        for c in cells
+    )
+    assert "subprocess" in joined or "git clone" in joined
+    assert "-b $REF" not in joined
+    assert "promote=False" in joined or "promote=False" in joined.replace(" ", "")
+    assert "promoted" in joined and "False" in joined
+    assert "production_pointer_touched" in joined
+    assert "SIGNAL_ONLY" in joined.upper() or "signal_only" in joined
