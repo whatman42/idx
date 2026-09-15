@@ -1,6 +1,10 @@
-"""Continuous operational paper portfolio — SIGNAL ONLY. Schema ops_paper_v2 + TP/SL."""
+"""Instant Paper Portfolio — simulated fills only, NO broker execution.
+
+Schema ops_paper_v2 + TP/SL + performance metrics + ledger reconstruction.
+NO LIVE EXECUTION. Broker is never used for orders.
+"""
 from __future__ import annotations
-import hashlib, json, uuid
+import hashlib, json, uuid, re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -180,11 +184,17 @@ def apply_long_entry(state: PaperPortfolioState, *, symbol: str, price: float, w
     state.positions[symbol] = asdict(pos)
     state.applied_order_ids = (state.applied_order_ids + [oid])[-5000:]
     state.trade_count += 1; state.signal_count += 1
-    trade = {"trade_id": "tx_" + hashlib.sha256(f"{oid}|0".encode()).hexdigest()[:16],
+    trade = {
+        "trade_id": "tx_" + hashlib.sha256(f"{oid}|0".encode()).hexdigest()[:16],
         "order_id": oid, "signal_id": signal_id, "symbol": symbol, "side": 1, "action": "BUY",
-        "qty": float(qty), "lots": float(qty)/lot_size, "price": float(exec_px), "notional": float(notional),
-        "fee": float(fee), "total_cost": float(cost), "tp": float(tp), "sl": float(sl),
-        "slippage_bps": slippage_bps, "timestamp": timestamp, "classification": "FULL_FILL"}
+        "qty": float(qty), "lots": float(qty) / lot_size,
+        "reference_price": float(price), "fill_price": float(exec_px), "price": float(exec_px),
+        "gross_value": float(notional), "notional": float(notional),
+        "fee": float(fee), "fee_bps": float(fee_bps), "slippage_bps": float(slippage_bps),
+        "total_cost": float(cost), "net_cash_change": float(-cost),
+        "tp": float(tp), "sl": float(sl),
+        "timestamp": timestamp, "status": "FILLED", "classification": "FULL_FILL",
+    }
     state.trades = (state.trades + [trade])[-2000:]
     state.signal_ledger = (state.signal_ledger + [{"signal_id": signal_id, "symbol": symbol, "side": "BUY", "status": "FULL_FILL", "timestamp": timestamp}])[-2000:]
     state.last_event = f"BUY {symbol} qty={qty} lots={qty/lot_size:.0f} tp={tp} sl={sl}"
@@ -207,12 +217,18 @@ def apply_exit(state: PaperPortfolioState, *, symbol: str, price: float, timesta
     state.cash += proceeds; state.realized_pnl += pnl; state.trade_count += 1
     order = f"EXIT|{symbol}|{timestamp}|{reason}"
     oid = "ord_" + hashlib.sha256(order.encode()).hexdigest()[:16]
-    trade = {"trade_id": "tx_" + hashlib.sha256(f"{oid}|exit".encode()).hexdigest()[:16],
+    trade = {
+        "trade_id": "tx_" + hashlib.sha256(f"{oid}|exit".encode()).hexdigest()[:16],
         "order_id": oid, "signal_id": pos.signal_id, "symbol": symbol, "side": -1, "action": "SELL",
-        "qty": float(pos.qty), "lots": float(pos.qty)/DEFAULT_LOT_SIZE, "price": float(exec_px),
-        "notional": float(notional), "fee": float(fee), "proceeds": float(proceeds), "pnl": float(pnl),
+        "qty": float(pos.qty), "lots": float(pos.qty) / DEFAULT_LOT_SIZE,
+        "reference_price": float(price), "fill_price": float(exec_px), "price": float(exec_px),
+        "gross_value": float(notional), "notional": float(notional),
+        "fee": float(fee), "fee_bps": float(fee_bps), "slippage_bps": float(slippage_bps),
+        "proceeds": float(proceeds), "net_cash_change": float(proceeds),
+        "pnl": float(pnl), "cost_basis": float(cost_basis),
         "reason": reason, "entry": float(pos.avg_entry), "tp": float(pos.tp or 0), "sl": float(pos.sl or 0),
-        "timestamp": timestamp, "classification": "FULL_EXIT"}
+        "timestamp": timestamp, "status": "FILLED", "classification": "FULL_EXIT",
+    }
     state.trades = (state.trades + [trade])[-2000:]
     state.signal_ledger = (state.signal_ledger + [{"signal_id": pos.signal_id, "symbol": symbol, "side": "SELL", "status": reason, "timestamp": timestamp}])[-2000:]
     del state.positions[symbol]
@@ -275,3 +291,208 @@ def summary(state: PaperPortfolioState, marks: Optional[dict[str, float]] = None
         "open_positions": open_det, "open_count": len(open_det), "trade_count": state.trade_count,
         "signal_count": state.signal_count, "last_processed_trading_day": state.last_processed_trading_day,
         "last_event": state.last_event, "schema_version": state.schema_version}
+
+
+def performance_metrics(state: PaperPortfolioState, marks: Optional[dict[str, float]] = None) -> dict[str, Any]:
+    """Compute performance from ledger. N/A when sample insufficient — no fake metrics."""
+    marks = marks or {}
+    closed = [t for t in (state.trades or []) if str(t.get("action") or "").upper() == "SELL" or int(t.get("side") or 0) < 0]
+    wins = [t for t in closed if float(t.get("pnl") or 0) > 0]
+    losses = [t for t in closed if float(t.get("pnl") or 0) < 0]
+    gross_profit = sum(float(t.get("pnl") or 0) for t in wins)
+    gross_loss = abs(sum(float(t.get("pnl") or 0) for t in losses))
+    total_fees = sum(float(t.get("fee") or 0) for t in (state.trades or []))
+    total_slip = 0.0
+    for t in state.trades or []:
+        bps = float(t.get("slippage_bps") or 0)
+        notion = float(t.get("notional") or t.get("gross_value") or 0)
+        total_slip += notion * (bps / 10000.0)
+    eq = state.equity(marks)
+    total_pnl = eq - float(state.initial_capital)
+    unrealized = eq - float(state.initial_capital) - float(state.realized_pnl)
+    n_closed = len(closed)
+    out: dict[str, Any] = {
+        "initial_capital": float(state.initial_capital),
+        "current_equity": float(eq),
+        "cash": float(state.cash),
+        "market_value": float(state.market_value(marks)),
+        "total_return_pct": (total_pnl / state.initial_capital * 100.0) if state.initial_capital else 0.0,
+        "realized_pnl": float(state.realized_pnl),
+        "unrealized_pnl": float(unrealized),
+        "total_pnl": float(total_pnl),
+        "number_of_trades": int(state.trade_count),
+        "closed_trades": n_closed,
+        "winning_trades": len(wins),
+        "losing_trades": len(losses),
+        "gross_profit": float(gross_profit),
+        "gross_loss": float(gross_loss),
+        "total_fees": float(total_fees),
+        "total_slippage_est": float(total_slip),
+        "exposure_pct": float(state.exposure(marks) * 100.0),
+        "cash_ratio_pct": (state.cash / eq * 100.0) if eq > 0 else 100.0,
+        "max_drawdown_pct": float(state.max_drawdown * 100.0),
+        "current_drawdown_pct": float(state.drawdown(marks) * 100.0),
+        "peak_equity": float(state.peak_equity),
+    }
+    if n_closed == 0:
+        out["win_rate"] = None
+        out["profit_factor"] = None
+        out["expectancy"] = None
+        out["average_win"] = None
+        out["average_loss"] = None
+        out["sample_note"] = "N/A — belum ada closed trade"
+    else:
+        out["win_rate"] = len(wins) / n_closed
+        out["average_win"] = (gross_profit / len(wins)) if wins else 0.0
+        out["average_loss"] = (gross_loss / len(losses)) if losses else 0.0
+        out["profit_factor"] = (gross_profit / gross_loss) if gross_loss > 1e-9 else None
+        out["expectancy"] = (sum(float(t.get("pnl") or 0) for t in closed) / n_closed)
+        out["sample_note"] = None
+    return out
+
+
+def rebuild_portfolio_from_trades(
+    trades: list[dict[str, Any]],
+    *,
+    initial_capital: float = DEFAULT_INITIAL_CAPITAL,
+    simulation_session_id: str = "",
+) -> PaperPortfolioState:
+    """Reconstruct portfolio state from append-only trade ledger (deterministic)."""
+    st = new_session(initial_capital=initial_capital)
+    if simulation_session_id:
+        st.simulation_session_id = simulation_session_id
+    for tr in trades:
+        action = str(tr.get("action") or "").upper()
+        side = int(tr.get("side") or 0)
+        sym = str(tr.get("symbol") or "")
+        qty = float(tr.get("qty") or 0)
+        px = float(tr.get("fill_price") or tr.get("price") or 0)
+        fee = float(tr.get("fee") or 0)
+        ts = str(tr.get("timestamp") or "")
+        if not sym or qty <= 0 or px <= 0:
+            continue
+        if action == "BUY" or side > 0:
+            cost = qty * px + fee
+            st.cash -= cost
+            existing = st.open_positions().get(sym)
+            if existing:
+                total_qty = existing.qty + qty
+                avg = (existing.qty * existing.avg_entry + qty * px) / total_qty if total_qty else px
+                st.positions[sym] = asdict(PaperPosition(
+                    symbol=sym, qty=total_qty, avg_entry=avg,
+                    entry_timestamp=existing.entry_timestamp or ts,
+                    signal_id=str(tr.get("signal_id") or existing.signal_id),
+                    side=1, last_mark=px,
+                    tp=float(tr.get("tp") or existing.tp or 0),
+                    sl=float(tr.get("sl") or existing.sl or 0),
+                ))
+            else:
+                st.positions[sym] = asdict(PaperPosition(
+                    symbol=sym, qty=qty, avg_entry=px, entry_timestamp=ts,
+                    signal_id=str(tr.get("signal_id") or ""), side=1, last_mark=px,
+                    tp=float(tr.get("tp") or 0), sl=float(tr.get("sl") or 0),
+                ))
+            st.trade_count += 1
+        elif action == "SELL" or side < 0:
+            existing = st.open_positions().get(sym)
+            if not existing:
+                continue
+            sell_qty = min(qty, existing.qty)
+            proceeds = sell_qty * px - fee
+            cost_basis = sell_qty * existing.avg_entry
+            st.cash += proceeds
+            st.realized_pnl += proceeds - cost_basis
+            remaining = existing.qty - sell_qty
+            if remaining <= 1e-9:
+                del st.positions[sym]
+            else:
+                st.positions[sym] = asdict(PaperPosition(
+                    symbol=sym, qty=remaining, avg_entry=existing.avg_entry,
+                    entry_timestamp=existing.entry_timestamp, signal_id=existing.signal_id,
+                    side=1, last_mark=px, tp=existing.tp, sl=existing.sl,
+                ))
+            st.trade_count += 1
+        st.trades.append(dict(tr))
+    return st
+
+
+def validate_portfolio_accounting(state: PaperPortfolioState, marks: Optional[dict[str, float]] = None) -> list[str]:
+    """Detect accounting anomalies — never silent-correct."""
+    marks = marks or {}
+    errs: list[str] = []
+    if state.cash < -1e-4:
+        errs.append(f"negative_cash:{state.cash}")
+    mv = state.market_value(marks)
+    eq = state.equity(marks)
+    if abs(eq - (state.cash + mv)) > 1.0:
+        errs.append(f"equity_mismatch cash+mv={state.cash+mv} equity={eq}")
+    for sym, pos in state.open_positions().items():
+        if pos.qty < -1e-9:
+            errs.append(f"negative_qty:{sym}")
+        if pos.qty == 0:
+            errs.append(f"phantom_zero_position:{sym}")
+    ids = [t.get("trade_id") for t in (state.trades or []) if t.get("trade_id")]
+    if len(ids) != len(set(ids)):
+        errs.append("duplicate_trade_id")
+    return errs
+
+
+def process_tp_sl_exits_ohlc(
+    state: PaperPortfolioState,
+    bars: dict[str, dict[str, float]],
+    timestamp: str,
+    *,
+    fee_bps: float = 25.0,
+    slippage_bps: float = 5.0,
+) -> tuple:
+    """Intrabar TP/SL using high/low. Conservative: if both hit same bar, SL takes precedence."""
+    closed = []
+    for sym, pos in list(state.open_positions().items()):
+        bar = bars.get(sym) or {}
+        high = float(bar.get("high") or 0)
+        low = float(bar.get("low") or 0)
+        close = float(bar.get("close") or 0)
+        if high <= 0 and low <= 0 and close <= 0:
+            continue
+        if high <= 0:
+            high = close
+        if low <= 0:
+            low = close
+        reason = None
+        exit_px = close
+        sl_hit = bool(pos.sl and pos.sl > 0 and low <= pos.sl)
+        tp_hit = bool(pos.tp and pos.tp > 0 and high >= pos.tp)
+        if sl_hit and tp_hit:
+            reason = "SL_HIT"
+            exit_px = float(pos.sl)
+        elif sl_hit:
+            reason = "SL_HIT"
+            exit_px = float(pos.sl)
+        elif tp_hit:
+            reason = "TP_HIT"
+            exit_px = float(pos.tp)
+        if reason:
+            state, trade, cls = apply_exit(
+                state, symbol=sym, price=exit_px, timestamp=timestamp,
+                reason=reason, fee_bps=fee_bps, slippage_bps=slippage_bps,
+            )
+            if trade:
+                closed.append(trade)
+    return state, closed
+
+
+def assert_no_broker_execution_imports(module_source: str) -> list[str]:
+    """Static guard: paper module must not call broker order APIs."""
+    patterns = [
+        r"\bplace_order\s*\(",
+        r"\bsubmit_order\s*\(",
+        r"\bcreate_order\s*\(",
+        r"\bsend_order\s*\(",
+        r"BrokerClient\s*\.\s*execute",
+        r"\blive_order\s*\(",
+    ]
+    hits = []
+    for pat in patterns:
+        if re.search(pat, module_source):
+            hits.append(pat)
+    return hits
