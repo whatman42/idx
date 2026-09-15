@@ -1,6 +1,6 @@
 """IDX operational signal bot — SIGNAL ONLY + continuous paper portfolio (Rp10M).
 Default scan: FULL IDX universe (symbols=ALL).
-Telegram: every message narrated by Gemini (incl. no-signal).
+Telegram: deterministic dashboard + optional Gemini executive summary (interpretation only).
 """
 from __future__ import annotations
 import hashlib, json, os
@@ -26,11 +26,31 @@ from src.python.ops.paper_portfolio import (
 )
 from src.python.validation.economic_sim import simulate_long_only
 from src.python.ops.readiness import assess_readiness
-from src.python.llm.gemini_narrator import narrate_signals, narrate_no_signal, narrate_halt
+from src.python.llm.gemini_narrator import narrate_halt
+from src.python.llm.executive_summary_gemini import generate_executive_summary
 from src.python.reporting.builder import build_buy_signal, build_cycle_report
 from src.python.reporting.finance import shares_from_lots, lots_from_shares, SHARES_PER_LOT
-from src.python.reporting.llm_boundary import safe_compose
+from src.python.reporting.llm_boundary import compose_with_executive_summary
+from src.python.reporting.executive_summary import (
+    build_executive_payload, payload_fingerprint, should_emit_summary, mark_emitted,
+)
+from src.python.reporting.composer import compose_telegram_message
 from src.python.reporting.validation import validate_cycle_report
+
+def _telegram_text_from_cycle(cycle, report: dict) -> tuple:
+    """Deterministic dashboard + optional Gemini executive summary (reporting only)."""
+    payload = build_executive_payload(cycle)
+    fp = payload_fingerprint(payload)
+    exec_text, obs = generate_executive_summary(payload, use_llm=True)
+    obs_d = obs.to_dict()
+    obs_d["input_fingerprint"] = fp
+    if not should_emit_summary(fp, channel="telegram_exec"):
+        text = compose_telegram_message(cycle)
+        obs_d["duplicate_suppressed"] = True
+        return text, "deterministic", obs_d
+    text, src = compose_with_executive_summary(cycle, executive_text=exec_text, executive_enabled=True)
+    mark_emitted(fp, channel="telegram_exec")
+    return text, src, obs_d
 
 app = typer.Typer(add_completion=False)
 JKT = ZoneInfo("Asia/Jakarta")
@@ -357,13 +377,8 @@ def run(
         report["signals_notified"] = 0
         pf_sum = report.get("paper_portfolio") or {}
         cycle = build_cycle_report(
-            trading_date=trading_date,
-            mode=mode,
-            pf_summary=pf_sum,
-            signal=None,
-            exits=report.get("exits_today") or [],
-            marks=marks,
-            model_version=model_version,
+            trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=None,
+            exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
             governor_action=str(report.get("governor_action") or ""),
             dq_status=str(report.get("dq_status") or ""),
             data_source=str(report.get("data_source") or ""),
@@ -371,19 +386,15 @@ def run(
             status=str(report.get("status") or "NO_SIGNAL"),
         )
         report["cycle_report"] = cycle.to_dict()
-        llm_text = None
         try:
-            narration = narrate_no_signal(trading_date=trading_date, mode=mode, report=report)
-            llm_text = narration.get("text")
-            report["telegram_narration"] = {
-                "kind": "no_signal", "narrator": narration.get("narrator"),
-                "fallback": narration.get("fallback"), "model": narration.get("model"),
-                "reason": narration.get("reason"),
-            }
+            text_msg, src, exec_obs = _telegram_text_from_cycle(cycle, report)
+            report["telegram_composer_source"] = src
+            report["executive_summary"] = exec_obs
         except Exception as e:
-            report["telegram_narration"] = {"kind": "no_signal", "reason": type(e).__name__}
-        text_msg, src = safe_compose(cycle, llm_text=llm_text, llm_enabled=bool(llm_text))
-        report["telegram_composer_source"] = src
+            text_msg = compose_telegram_message(cycle)
+            src = "deterministic"
+            report["telegram_composer_source"] = src
+            report["executive_summary"] = {"error": type(e).__name__, "fallback_used": True}
         if allow_tg:
             provider = TelegramProvider.from_env()
             if provider is None:
@@ -416,16 +427,13 @@ def run(
             shares = shares_from_lots(float(top["lots"]))
         sig = build_buy_signal(
             signal_id=str(top.get("notification_id") or top.get("signal_id") or f"sig_{trading_date}_{top.get('symbol')}"),
-            timestamp=trading_date,
-            symbol=str(top["symbol"]),
+            timestamp=trading_date, symbol=str(top["symbol"]),
             entry_reference=float(top.get("entry_price") or top.get("price") or 0),
             stop_loss=float(top.get("sl") or 0),
             tp1=float(top.get("tp1") or 0) or (float(top.get("entry_price") or top.get("price") or 0) + (float(top.get("tp") or 0) - float(top.get("entry_price") or top.get("price") or 0)) * 0.5),
-            tp2=float(top.get("tp") or 0),
-            shares=shares,
+            tp2=float(top.get("tp") or 0), shares=shares,
             equity=float(pf_sum.get("equity") or 0) or float(initial_capital),
-            confidence=float(top.get("confidence") or 0),
-            confidence_method="sma20_rank_score",
+            confidence=float(top.get("confidence") or 0), confidence_method="sma20_rank_score",
             model_version=model_version,
             explanation=[str(top.get("why") or "Ranking confidence vs SMA20")],
             entry_low=float(top.get("entry_price") or top.get("price") or 0) * 0.995,
@@ -435,13 +443,8 @@ def run(
         if sig.tp1 <= 0 and sig.tp2 > 0 and sig.entry_reference > 0:
             sig.tp1 = sig.entry_reference + (sig.tp2 - sig.entry_reference) * 0.5
         cycle = build_cycle_report(
-            trading_date=trading_date,
-            mode=mode,
-            pf_summary=pf_sum,
-            signal=sig,
-            exits=report.get("exits_today") or [],
-            marks=marks,
-            model_version=model_version,
+            trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=sig,
+            exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
             governor_action=str(report.get("governor_action") or ""),
             dq_status=str(report.get("dq_status") or ""),
             data_source=str(report.get("data_source") or ""),
@@ -450,32 +453,15 @@ def run(
         report["cycle_report"] = cycle.to_dict()
         report["integrity_ok"] = cycle.integrity_ok
         report["integrity_errors"] = cycle.integrity_errors
-        llm_text = None
         try:
-            dashboard_pf = {
-                "cash": pf_sum.get("cash"), "equity": pf_sum.get("equity"),
-                "exposure": pf_sum.get("exposure"),
-                "realized_pnl": pf_sum.get("realized_pnl"),
-                "unrealized_pnl": pf_sum.get("unrealized_pnl"),
-                "initial_capital": pf_sum.get("initial_capital"),
-                "open_positions": pf_sum.get("open_positions") or {},
-            }
-            narration = narrate_signals(
-                trading_date=trading_date, mode=mode, signals=to_send,
-                portfolio=dashboard_pf, governor=report.get("governor_action", ""),
-                dq=report.get("dq_status", ""),
-                extra={"exits": report.get("exits_today") or [], "top_n": TOP_N_SIGNAL},
-            )
-            llm_text = narration.get("text")
-            report["telegram_narration"] = {
-                "kind": "signals", "narrator": narration.get("narrator"),
-                "fallback": narration.get("fallback"), "model": narration.get("model"),
-                "reason": narration.get("reason"),
-            }
+            text, src, exec_obs = _telegram_text_from_cycle(cycle, report)
+            report["telegram_composer_source"] = src
+            report["executive_summary"] = exec_obs
         except Exception as e:
-            report["telegram_narration"] = {"kind": "signals", "narrator": "skipped", "reason": type(e).__name__}
-        text, src = safe_compose(cycle, llm_text=llm_text, llm_enabled=bool(llm_text))
-        report["telegram_composer_source"] = src
+            text = compose_telegram_message(cycle)
+            src = "deterministic"
+            report["telegram_composer_source"] = src
+            report["executive_summary"] = {"error": type(e).__name__, "fallback_used": True}
         try:
             _send_plain(provider, text)
             for s in to_send:
