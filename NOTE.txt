@@ -1,0 +1,10 @@
+Full paper_portfolio.py and composer.py are in local validation path. Apply from artifacts/idx_instant_paper/ if push truncated.
+
+Validated: 133 passed full suite with joblib/sklearn/typer installed.
+
+Key changes:
+- SIM_FEE_MODEL=SIMULATION, buy 15bps, exit 25bps, slippage 5bps
+- INTRABAR_POLICY=SL_PRECEDENCE
+- Idempotency key = signal_id|BUY|symbol (signal B different ID can scale-in)
+- simulation_assumptions() on metrics and summary
+- Telegram footer shows fee model + SL PRECEDENCE
