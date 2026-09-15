@@ -254,15 +254,30 @@ class DeterministicComposer:
     def _position_detail(self, p: OpenPositionView) -> list[str]:
         lots_s = _num(p.lots, 0)
         shares_s = _num(p.shares, 0)
+        # Modal Posisi = cost basis; Nilai Pasar = qty × mark
+        cost_basis = getattr(p, "cost_basis", None)
+        if cost_basis is None and p.entry_price is not None and p.shares is not None:
+            try:
+                cost_basis = float(p.entry_price) * float(p.shares)
+            except Exception:
+                cost_basis = None
+        market_value = getattr(p, "market_value", None)
+        if market_value is None and p.mark_price is not None and p.shares is not None:
+            try:
+                market_value = float(p.mark_price) * float(p.shares)
+            except Exception:
+                market_value = None
         return [
             f"• {p.symbol}",
-            f"  Jumlah       : {lots_s} lot ({shares_s} lembar)",
-            f"  Harga Beli   : {_rp(p.entry_price)}",
+            f"  Jumlah         : {lots_s} lot ({shares_s} lembar)",
+            f"  Harga Beli     : {_rp(p.entry_price)}",
             f"  Harga Sekarang : {_rp(p.mark_price)}",
-            f"  Target Profit: {_rp(p.tp2) if p.tp2 else (_rp(p.tp1) if p.tp1 else '-')}",
-            f"  Batas Rugi   : {_rp(p.stop_loss) if p.stop_loss else '-'}",
-            f"  Tanggal Beli : {p.opened_at or '-'}",
-            f"  P/L          : {_rp(p.unrealized_pnl)}",
+            f"  Modal Posisi   : {_rp(cost_basis)}",
+            f"  Nilai Pasar    : {_rp(market_value)}",
+            f"  Target Profit  : {_rp(p.tp2) if p.tp2 else (_rp(p.tp1) if p.tp1 else '-')}",
+            f"  Batas Rugi     : {_rp(p.stop_loss) if p.stop_loss else '-'}",
+            f"  Tanggal Beli   : {p.opened_at or '-'}",
+            f"  Unrealized P/L : {_rp(p.unrealized_pnl)}",
         ]
 
     def _exits_section(self, exits: list[ExitReport]) -> list[str]:
