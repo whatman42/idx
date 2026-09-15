@@ -81,15 +81,19 @@ def compose_with_executive_summary(
     executive_text: Optional[str] = None,
     executive_enabled: bool = True,
 ) -> tuple[str, str]:
-    """Always render deterministic dashboard; optionally append executive summary."""
-    det = DeterministicComposer().compose(report)
+    """Dashboard body → optional executive → MODE OPERASI footer."""
+    comp = DeterministicComposer()
+    body = comp.compose_body(report)
+    footer = "\n".join(comp._footer(report))
     if not executive_enabled or not executive_text or not executive_text.strip():
-        return det, "deterministic"
-    body = executive_text.strip()
+        return body + "\n" + footer, "deterministic"
+    exec_part = executive_text.strip()
     combined = (
-        det
+        body
         + "\n\n──────────────────────────────\n"
         + "🧠 RINGKASAN EKSEKUTIF (interpretasi, bukan keputusan trading)\n\n"
-        + body
+        + exec_part
+        + "\n"
+        + footer
     )
     return combined, "deterministic+executive"
