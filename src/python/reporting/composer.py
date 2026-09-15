@@ -69,9 +69,9 @@ def _decision_label(report: CycleReport) -> str:
     if not report.integrity_ok:
         return "🔴 DATA TIDAK VALID"
     if sig and sig.decision == "BUY":
-        return f"🟢 BUY — {sig.symbol}"
+        return f"🟢 SINYAL BUY — {sig.symbol}"
     if sig and sig.decision == "SELL":
-        return f"🔴 SELL — {sig.symbol}"
+        return f"🔴 SINYAL SELL — {sig.symbol}"
     if sig and sig.decision == "NO_SIGNAL":
         return "🟡 TIDAK ADA PEMBELIAN"
     if report.exits:
@@ -83,6 +83,13 @@ class DeterministicComposer:
     """Pure template renderer. Numbers only from CycleReport."""
 
     def compose(self, report: CycleReport) -> str:
+        if not report.integrity_ok:
+            return self._integrity_failure(report)
+        body = self._dashboard(report)
+        return body + "\n" + "\n".join(self._footer(report))
+
+    def compose_body(self, report: CycleReport) -> str:
+        """Dashboard without MODE OPERASI footer (footer appended after executive)."""
         if not report.integrity_ok:
             return self._integrity_failure(report)
         return self._dashboard(report)
@@ -130,7 +137,6 @@ class DeterministicComposer:
         lines.extend(self._signal_section(report))
         lines.append("")
         lines.extend(self._system_block(report))
-        lines.extend(self._footer(report))
         return "\n".join(lines)
 
     def _header(self, report: CycleReport) -> list[str]:
@@ -186,14 +192,14 @@ class DeterministicComposer:
                 for w in why:
                     lines.append(str(w))
             else:
-                lines.append("Ada kandidat beli yang lolos filter sistem hari ini.")
+                lines.append("Sistem menghasilkan sinyal BUY yang lolos filter.")
             lines.append("")
             lines.append("➡️ Tindakan:")
             fill = getattr(sig, "fill_status", "") or ""
             if fill:
-                lines.append(f"Catat sinyal BUY {sig.symbol} (status isi: {fill}).")
-            else:
-                lines.append(f"Catat sinyal BUY {sig.symbol} sesuai parameter di bawah (bukan order otomatis).")
+                lines.append(f"Status simulasi: {fill}")
+            lines.append("Broker: tidak dikirim (SIGNAL ONLY).")
+            lines.append(f"Catat sinyal BUY {sig.symbol} untuk audit — bukan order live.")
         elif sig and sig.decision == "SELL":
             why = (sig.explanation_context or [])[:3]
             for w in why:
@@ -202,7 +208,8 @@ class DeterministicComposer:
                 lines.append("Sistem mencatat keputusan jual berdasarkan state aktual.")
             lines.append("")
             lines.append("➡️ Tindakan:")
-            lines.append(f"Catat sinyal SELL {sig.symbol} (bukan order otomatis).")
+            lines.append("Broker: tidak dikirim (SIGNAL ONLY).")
+            lines.append(f"Catat sinyal SELL {sig.symbol} untuk audit — bukan order live.")
         else:
             reasons = list(report.no_signal_reasons or [])
             if reasons:
@@ -271,7 +278,7 @@ class DeterministicComposer:
         if sig and sig.decision == "BUY":
             lines.append("Rekomendasi utama (data sistem):")
             lines.append("")
-            lines.append(f"• {sig.symbol} — BUY")
+            lines.append(f"• {sig.symbol} — SINYAL BUY")
             lines.append(f"  Harga acuan     : {_rp(sig.entry_reference)}")
             if sig.entry_low > 0 and sig.entry_high > 0 and (
                 abs(sig.entry_low - sig.entry_reference) > 1e-9
@@ -296,8 +303,9 @@ class DeterministicComposer:
                 lines.append(f"  Risk:Reward     : 1 : {_num(sig.rr_tp2)}")
             elif sig.rr_tp1 is not None:
                 lines.append(f"  Risk:Reward     : 1 : {_num(sig.rr_tp1)}")
-            lines.append(f"  Model confidence: {_num(sig.confidence, 0)}/100")
-            lines.append(f"  Metode skor     : {sig.confidence_method or '-'}")
+            lines.append(f"  Skor Model      : {_num(sig.confidence, 0)}/100")
+            lines.append(f"  Metode          : {sig.confidence_method or '-'}")
+            lines.append("  Catatan         : skor ranking model, bukan probabilitas naik")
             if sig.explanation_context:
                 lines.append("  Alasan (sistem):")
                 for w in sig.explanation_context[:5]:
@@ -350,15 +358,16 @@ class DeterministicComposer:
         return lines
 
     def _footer(self, report: CycleReport) -> list[str]:
-        lines = ["", "──────────────────────────────"]
-        if report.signal_only or not report.live_execution:
-            lines.append("⚠️ SIGNAL ONLY — bukan ajakan beli/jual")
-            lines.append("Paper simulation — NO LIVE EXECUTION")
-        elif report.live_execution:
-            lines.append("⚠️ Mode LIVE sesuai konfigurasi sistem")
+        lines = ["", "──────────────────────────────", "⚠️ MODE OPERASI"]
+        if report.live_execution:
+            lines.append("Mode LIVE sesuai konfigurasi sistem.")
         else:
-            lines.append("⚠️ SIGNAL ONLY — bukan ajakan beli/jual")
-            lines.append("NO LIVE EXECUTION")
+            lines.append("SIGNAL ONLY")
+            lines.append("Tidak ada order yang dikirim ke broker.")
+            lines.append("Tidak ada eksekusi live.")
+            lines.append("Output ini adalah hasil sistem dan bukan")
+            lines.append("rekomendasi investasi personal.")
+            lines.append("Paper simulation — NO LIVE EXECUTION")
         return lines
 
 
