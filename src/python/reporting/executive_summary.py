@@ -7,7 +7,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Optional
 
@@ -155,136 +154,102 @@ def payload_fingerprint(payload: dict[str, Any]) -> str:
 
 
 def deterministic_executive_summary(payload: dict[str, Any]) -> str:
-    """Template executive summary — no LLM. Used as fallback and default."""
+    """Insight-focused executive summary — no number recompute; avoid repeating dashboard."""
     pf = payload.get("portfolio") or {}
     dec = payload.get("decision") or {}
     risk = payload.get("risk") or {}
     perf = payload.get("performance") or {}
     exits = payload.get("exits") or []
+    sigs = payload.get("signals") or {}
     action = str(dec.get("action") or "NO_BUY")
-
-    equity = pf.get("equity")
-    cash = pf.get("cash")
+    positions = int(pf.get("positions") or 0)
     exp = pf.get("exposure_pct")
-    positions = pf.get("positions", 0)
-    ret = pf.get("return_pct")
-
-    def rp(x):
-        if x is None:
-            return "tidak tersedia"
-        try:
-            return f"Rp{float(x):,.0f}".replace(",", ".")
-        except Exception:
-            return "tidak tersedia"
-
-    if positions == 0 and float(exp or 0) <= 0.01:
-        inti = "Bot saat ini tidak memiliki posisi saham dan modal masih dalam bentuk kas. "
-    else:
-        inti = f"Bot memiliki {positions} posisi dengan dana terpakai {exp if exp is not None else '-'}%. "
-
-    if action == "NO_BUY":
-        inti += "Tidak ada sinyal yang memenuhi seluruh persyaratan pembelian pada periode ini."
-    elif action == "BUY":
-        inti += f"Sistem mencatat keputusan BUY pada {dec.get('symbol', 'simbol terkait')}."
-    elif action == "SELL":
-        inti += f"Sistem mencatat keputusan SELL pada {dec.get('symbol', 'simbol terkait')}."
-
-    reasons = dec.get("reason_codes") or []
-    if action == "NO_BUY":
-        keputusan = "Tidak ada pembelian. Sistem mempertahankan modal tanpa membuka posisi baru."
-        if reasons:
-            keputusan += " Alasan sistem: " + "; ".join(str(r) for r in reasons[:3]) + "."
-    elif action == "BUY":
-        keputusan = f"BUY {dec.get('symbol', '')} sesuai decision engine."
-        if reasons:
-            keputusan += " " + "; ".join(str(r) for r in reasons[:3])
-    else:
-        keputusan = f"{action} {dec.get('symbol', '')} sesuai decision engine."
-
-    port_line = f"Ekuitas {rp(equity)}, kas {rp(cash)}"
-    if exp is not None:
-        port_line += f", dana terpakai {float(exp):.2f}%"
-    if ret is not None:
-        port_line += f", return {float(ret):.2f}%"
-    port_line += f", posisi aktif: {positions}."
-
-    if not perf and not exits and positions == 0 and action == "NO_BUY":
-        performa = "Belum ada transaksi pada periode ini, sehingga performa trading belum dapat dinilai."
-    elif exits:
-        performa = f"Terdapat {len(exits)} exit pada periode ini."
-        for e in exits[:2]:
-            performa += f" {e.get('symbol')}: P/L {rp(e.get('realized_pnl'))} ({e.get('exit_reason')})."
-    elif perf:
-        parts = []
-        for key in (
-            "daily_return_pct",
-            "weekly_return_pct",
-            "win_rate",
-            "profit_factor",
-            "max_drawdown_pct",
-            "trades",
-        ):
-            if key in perf and perf[key] is not None:
-                parts.append(f"{key}={perf[key]}")
-        performa = (
-            "Metrik yang tersedia: " + ", ".join(parts)
-            if parts
-            else "Data performa terbatas; belum cukup representatif."
-        )
-        if int(perf.get("trades") or 0) < 5:
-            performa += " Jumlah sampel masih kecil."
-    else:
-        performa = "Data tidak cukup untuk menilai performa bot secara lengkap."
-
-    blocks = risk.get("active_blocks") or []
-    if risk.get("status") == "BLOCKED" or blocks:
-        perhatian = (
-            "Status risiko/blocked: " + "; ".join(str(b) for b in blocks[:4])
-            if blocks
-            else "Status risiko BLOCKED."
-        )
-    elif (payload.get("data_quality") or {}).get("status", "").upper() in ("FAIL", "WARN"):
-        perhatian = f"Kualitas data: {(payload.get('data_quality') or {}).get('status')}."
-    else:
-        perhatian = "Tidak ada anomali material yang dilaporkan dari data yang tersedia."
-
-    if action == "NO_BUY" and positions == 0:
-        kesimpulan = (
-            "Sistem berada dalam kondisi menunggu dan tidak mengambil posisi "
-            "karena belum ada sinyal yang memenuhi persyaratan."
-        )
-    elif action == "BUY":
-        kesimpulan = (
-            "Keputusan BUY berasal dari decision engine; ringkasan ini hanya interpretasi, "
-            "bukan order live."
-        )
-    else:
-        kesimpulan = "Ringkasan ini merefleksikan state sistem; bukan rekomendasi trading baru."
-
+    symbol = dec.get("symbol") or sigs.get("symbol") or ""
+    reasons = [str(r) for r in (dec.get("reason_codes") or [])[:3]]
+    gate = str(dec.get("risk_gate") or risk.get("status") or "-")
     sys = payload.get("system") or {}
+    dq = (payload.get("data_quality") or {}).get("status") or "-"
+
+    anomalies = []
+    if risk.get("integrity_ok") is False:
+        anomalies.extend([str(b) for b in (risk.get("active_blocks") or [])[:4]])
+    if risk.get("status") == "BLOCKED" and not anomalies:
+        anomalies.append("status risiko BLOCKED")
+
+    if action == "BUY" and symbol:
+        inti = (
+            f"1 sinyal BUY {symbol} lolos gate dan menjadi ranking #1 "
+            f"pada periode ini."
+        )
+        if reasons:
+            inti += " " + reasons[0]
+    elif action == "SELL" and symbol:
+        inti = f"Sistem mencatat sinyal SELL {symbol}."
+    elif positions == 0:
+        inti = (
+            "Tidak ada posisi aktif. Tidak ada sinyal yang memenuhi "
+            "seluruh syarat pembelian pada periode ini."
+        )
+    else:
+        inti = f"Tidak ada pembelian baru. {positions} posisi tetap dipegang."
+
+    if positions == 0:
+        port = "Tidak ada posisi aktif; exposure 0%."
+    else:
+        exp_s = f"{float(exp):.2f}%" if exp is not None else "-"
+        port = f"{positions} posisi aktif dengan exposure {exp_s}."
+        upnl = pf.get("unrealized_pnl")
+        if upnl is not None:
+            try:
+                port += f" Unrealized P/L (dari state): Rp{float(upnl):,.0f}".replace(",", ".")
+            except Exception:
+                pass
+
+    if exits:
+        performa = f"{len(exits)} exit tercatat pada periode ini."
+    elif int(perf.get("trades") or 0) < 5 and not exits:
+        performa = (
+            "Belum dapat dinilai secara representatif — sampel trade selesai masih kecil "
+            "atau belum ada exit."
+        )
+    elif perf:
+        performa = "Metrik performa tersedia di state; lihat field performance (bukan prediksi)."
+    else:
+        performa = "Belum ada trade yang selesai (exit); performa bot belum dapat dinilai."
+
+    notes = []
+    if anomalies:
+        notes.append("ANOMALI DATA: " + "; ".join(anomalies))
+    if action == "BUY":
+        notes.append("Sinyal BUY bukan jaminan profit.")
+        notes.append("Tidak ada order yang dikirim ke broker.")
+    if int(perf.get("trades") or 0) < 5 and not exits:
+        notes.append("Sampel performa masih terlalu kecil.")
+    if dq.upper() in ("FAIL", "WARN"):
+        notes.append(f"Kualitas data: {dq}.")
+    if not notes:
+        notes.append("Tidak ada anomali material yang dilaporkan dari data yang tersedia.")
+
+    risk_label = str(risk.get("status") or gate or "NORMAL")
+    if risk_label.upper() in ("PASS", "OK", ""):
+        risk_label = "PASS"
+    status = f"Sistem {risk_label if risk_label not in ('PASS',) else 'NORMAL'} • Risk Gate {gate} • Signal Only"
     if sys.get("live_execution") is False or sys.get("signal_only"):
-        kesimpulan += " Mode: SIGNAL ONLY — NO LIVE EXECUTION."
+        status += " • NO LIVE EXECUTION"
 
     lines = [
-        "🧠 INTI LAPORAN",
-        "",
+        "🧠 RINGKASAN EKSEKUTIF",
+        "📌 Inti",
         inti,
-        "",
-        "📌 KEPUTUSAN",
-        keputusan,
-        "",
-        "💰 PORTOFOLIO",
-        port_line,
-        "",
-        "📈 PERFORMA BOT",
+        "💰 Portofolio",
+        port,
+        "📈 Performa",
         performa,
-        "",
-        "⚠️ PERLU DIPERHATIKAN",
-        perhatian,
-        "",
-        "🎯 KESIMPULAN",
-        kesimpulan,
+        "⚠️ Perlu diperhatikan",
     ]
+    for n in notes:
+        lines.append(f"• {n}")
+    lines += ["🎯 Status", status]
     return "\n".join(lines)
 
 
@@ -299,6 +264,21 @@ def validate_executive_text(text: str, payload: dict[str, Any]) -> list[str]:
         errs.append("exec_word_limit")
 
     upper = text.upper()
+
+    banned_phrases = (
+        "RISIKO TERKENDALI",
+        "RISIKO AMAN",
+        "INVESTASI AMAN",
+        "PASTI UNTUNG",
+        "SANGAT AMAN",
+        "OPTIMAL",
+        "MENGUNTUNGKAN",
+    )
+    for bp in banned_phrases:
+        if bp in upper:
+            errs.append("exec_marketing_language")
+            break
+
     action = str((payload.get("decision") or {}).get("action") or "NO_BUY")
 
     if action == "NO_BUY":
@@ -331,7 +311,7 @@ def validate_executive_text(text: str, payload: dict[str, Any]) -> list[str]:
             except Exception:
                 pass
 
-    needed = ["INTI", "KEPUTUSAN", "PORTOFOLIO"]
+    needed = ["INTI", "PORTOFOLIO", "STATUS"]
     missing = [h for h in needed if h not in upper]
     if len(missing) >= 2:
         errs.append("exec_missing_sections")
