@@ -39,7 +39,7 @@ def test_no_position_no_signal_beginner_ux():
     assert "TIDAK ADA PEMBELIAN" in text
     assert "Tidak ada posisi aktif" in text
     assert "Pertahankan dana dalam bentuk kas" in text or "Tidak ada pembelian baru" in text
-    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
+    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text or "MODE OPERASI" in text
     assert "TOP 3" not in text
     assert "Exposure" not in text
     assert "volatilitas tinggi" not in text.lower()
@@ -88,12 +88,13 @@ def test_with_position_buy_signal():
         model_version="ops_sma_v0",
     )
     text = compose_telegram_message(report)
-    assert "BUY" in text and "BBCA" in text
+    assert "SINYAL BUY" in text and "BBCA" in text
     assert "Target Profit" in text
     assert "Batas Rugi" in text
     assert "Saham Dimiliki" in text
-    assert "Model confidence: 72/100" in text
-    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
+    assert "Skor Model" in text and "72/100" in text
+    assert "Broker: tidak dikirim" in text
+    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text or "MODE OPERASI" in text
     assert report.integrity_ok
 
 
@@ -121,7 +122,7 @@ def test_sell_exit_rendering():
     text = compose_telegram_message(report)
     assert "TLKM" in text
     assert "TP_HIT" in text or "EXIT" in text or "TRANSAKSI SELESAI" in text
-    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
+    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text or "MODE OPERASI" in text
 
 
 def test_blocked_integrity_message():
@@ -135,7 +136,7 @@ def test_blocked_integrity_message():
     text = compose_telegram_message(report)
     assert "BLOCKED" in text or "DATA TIDAK VALID" in text
     assert "equity_recon_mismatch" in text
-    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
+    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text or "MODE OPERASI" in text
 
 
 def test_risk_gate_blocked_status():
@@ -160,7 +161,7 @@ def test_mode_never_claims_live_when_false():
     )
     assert report.live_execution is False
     text = compose_telegram_message(report)
-    assert "NO LIVE EXECUTION" in text or "SIGNAL ONLY" in text
+    assert "NO LIVE EXECUTION" in text or "SIGNAL ONLY" in text or "MODE OPERASI" in text
     assert "• LIVE" not in text or report.live_execution
 
 
@@ -175,7 +176,7 @@ def test_missing_portfolio_shows_unavailable():
     )
     text = compose_telegram_message(report)
     assert "Tidak tersedia" in text or "TIDAK ADA PEMBELIAN" in text
-    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
+    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text or "MODE OPERASI" in text
 
 
 def test_rupiah_formatting_uses_dot_thousands():
@@ -226,5 +227,5 @@ def test_bbca_regression_still_in_text():
     )
     text = compose_telegram_message(report)
     assert "500" in text
-    assert "Model confidence: 72/100" in text
+    assert "Skor Model" in text and "72/100" in text
     assert "4.925.000" in text or "4925000" in text.replace(".", "")
