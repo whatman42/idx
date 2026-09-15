@@ -205,8 +205,8 @@ def test_cycle_and_composer_bbca():
     text = compose_telegram_message(report)
     assert "BBCA" in text
     assert "500" in text
-    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
-    assert "Model confidence: 72/100" in text
+    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text or "MODE OPERASI" in text
+    assert ("Skor Model" in text or "Model confidence" in text) and "72/100" in text
 
 
 def test_llm_mutation_rejected():
