@@ -15,7 +15,7 @@ from src.python.reporting.executive_summary import (
     validate_executive_text,
 )
 
-DEFAULT_MODEL = "gemini-2.0-flash-lite"
+DEFAULT_MODEL = "gemini-3.5-flash-lite"
 API_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
 SYSTEM_PROMPT = """Kamu adalah lapisan INTERPRETASI laporan sistem trading IDX (paper / SIGNAL ONLY).
