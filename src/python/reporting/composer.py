@@ -43,10 +43,8 @@ def _mode_label(report: CycleReport) -> str:
     mode = (report.mode or "-").upper()
     if report.live_execution:
         return f"Mode: {mode} • LIVE"
-    if report.signal_only:
-        if mode in ("PAPER", "TEST", "OPERATIONAL"):
-            return f"Mode: {mode} • SIGNAL ONLY (bukan transaksi live)"
-        return f"Mode: {mode} • SIGNAL ONLY"
+    if mode in ("PAPER", "TEST", "OPERATIONAL") or report.signal_only:
+        return f"Mode: {mode} • PAPER TRADING — INSTANT SIMULATION"
     return f"Mode: {mode}"
 
 
@@ -89,7 +87,6 @@ class DeterministicComposer:
         return body + "\n" + "\n".join(self._footer(report))
 
     def compose_body(self, report: CycleReport) -> str:
-        """Dashboard without MODE OPERASI footer (footer appended after executive)."""
         if not report.integrity_ok:
             return self._integrity_failure(report)
         return self._dashboard(report)
@@ -152,10 +149,11 @@ class DeterministicComposer:
         lines = ["💰 KONDISI DANA", ""]
         if not pf:
             lines += [
-                "Total Dana       : Tidak tersedia",
+                "Modal Awal       : Tidak tersedia",
+                "Total Equity     : Tidak tersedia",
                 "Dana Tunai       : Tidak tersedia",
                 "Dana Terpakai    : -",
-                "Keuntungan/Rugi  : -",
+                "Total P/L        : -",
                 "",
                 "📌 Saham Dimiliki : Tidak tersedia",
                 "",
@@ -169,10 +167,11 @@ class DeterministicComposer:
         n_pos = len(pf.open_positions or [])
 
         lines += [
-            f"Total Dana       : {_rp(pf.equity)}",
+            f"Modal Awal       : {_rp(pf.initial_capital)}" if pf.initial_capital else "Modal Awal       : -",
+            f"Total Equity     : {_rp(pf.equity)}",
             f"Dana Tunai       : {_rp(pf.cash)}",
             f"Dana Terpakai    : {_pct(pf.exposure_pct)}",
-            f"Keuntungan/Rugi  : {_rp(total_pnl)}"
+            f"Total P/L        : {_rp(total_pnl)}"
             + (f" ({_pct(pnl_pct)})" if pnl_pct is not None else ""),
             "",
             f"📌 Saham Dimiliki : {n_pos} posisi" if n_pos else "📌 Saham Dimiliki : Tidak ada",
@@ -196,10 +195,18 @@ class DeterministicComposer:
             lines.append("")
             lines.append("➡️ Tindakan:")
             fill = getattr(sig, "fill_status", "") or ""
-            if fill:
+            if fill in ("FULL_FILL", "FILLED", "FULL FILL"):
+                lines.append("📥 PAPER FILL")
+                lines.append("Status     : FILLED")
+                if sig.lots or sig.shares:
+                    lines.append(f"Jumlah     : {_num(sig.lots, 0)} lot / {_num(sig.shares, 0)} lembar")
+                if sig.entry_reference:
+                    lines.append(f"Harga Fill : {_rp(sig.entry_reference)}")
+                lines.append("Simulasi transaksi berhasil dicatat.")
+            elif fill:
                 lines.append(f"Status simulasi: {fill}")
-            lines.append("Broker: tidak dikirim (SIGNAL ONLY).")
-            lines.append(f"Catat sinyal BUY {sig.symbol} untuk audit — bukan order live.")
+            lines.append("Broker: tidak dikirim — NO LIVE EXECUTION.")
+            lines.append(f"📦 ASET PORTOFOLIO: {sig.symbol} tercatat di paper portfolio.")
         elif sig and sig.decision == "SELL":
             why = (sig.explanation_context or [])[:3]
             for w in why:
@@ -208,7 +215,7 @@ class DeterministicComposer:
                 lines.append("Sistem mencatat keputusan jual berdasarkan state aktual.")
             lines.append("")
             lines.append("➡️ Tindakan:")
-            lines.append("Broker: tidak dikirim (SIGNAL ONLY).")
+            lines.append("Broker: tidak dikirim — NO LIVE EXECUTION.")
             lines.append(f"Catat sinyal SELL {sig.symbol} untuk audit — bukan order live.")
         else:
             reasons = list(report.no_signal_reasons or [])
@@ -362,12 +369,13 @@ class DeterministicComposer:
         if report.live_execution:
             lines.append("Mode LIVE sesuai konfigurasi sistem.")
         else:
-            lines.append("SIGNAL ONLY")
+            lines.append("PAPER TRADING — INSTANT SIMULATION")
             lines.append("Tidak ada order yang dikirim ke broker.")
-            lines.append("Tidak ada eksekusi live.")
+            lines.append("Tidak ada live execution.")
+            lines.append("Fill hanya dicatat di paper portfolio ledger.")
             lines.append("Output ini adalah hasil sistem dan bukan")
             lines.append("rekomendasi investasi personal.")
-            lines.append("Paper simulation — NO LIVE EXECUTION")
+            lines.append("NO LIVE EXECUTION")
         return lines
 
 
