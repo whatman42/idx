@@ -20,8 +20,11 @@ STRATEGY_REGISTRY: dict[str, StrategySpec] = {
         strategy_id="trend_multi",
         family=StrategyFamily.TREND,
         display="Multi-period trend following",
-        description="SMA/EMA multi-period, slope, persistence, breakout distance.",
-        required_features=("sma_dist_20", "sma_dist_50", "sma_slope_20", "trend_persist_20"),
+        description="SMA/EMA multi-period, slope, persistence, breakout, momentum; RESEARCH/SHADOW only.",
+        required_features=(
+            "sma_dist_20", "sma_dist_50", "sma_slope_20",
+            "trend_persist_20", "mom_10_21", "breakout_high_20",
+        ),
         compatible_regimes=("bull", "bear"),
         default_weight=1.0,
         status="RESEARCH",
