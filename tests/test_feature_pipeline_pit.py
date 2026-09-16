@@ -49,7 +49,7 @@ def test_registry_required_features_subset_of_feature_registry():
 
 
 def test_assert_required_features_hard_failure():
-    with pytest.raises(ValueError, match="not in FEATURE_REGISTRY":
+    with pytest.raises(ValueError, match="not in FEATURE_REGISTRY"):
         assert_required_features_registered(["not_a_real_feature_xyz"])
 
 
