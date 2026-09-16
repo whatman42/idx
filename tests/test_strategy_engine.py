@@ -82,13 +82,17 @@ def test_mean_reversion_gated_in_bull_trend():
     dec = EnsembleGovernor().decide(EnsembleInput(
         symbol="BBCA", timestamp="2026-09-16", alphas=alphas, regime=regime,
     ))
-    # gated weight should prevent easy BUY from MR alone in bull+high vol
     assert dec.decision in (Decision.NO_SIGNAL, Decision.HOLD, Decision.BUY)
 
 
 def test_sizing_risk_budget_and_caps():
-    plan = compute_size(stop_distance_pct=0.03, risk_budget_pct=0.005, max_weight=0.10)
+    # uncapped: raise max_weight so pure risk_budget shows
+    plan = compute_size(stop_distance_pct=0.03, risk_budget_pct=0.005, max_weight=0.50)
     assert abs(plan.weight - (0.005 / 0.03)) < 1e-9
+    # capped by max_weight
+    capped_pos = compute_size(stop_distance_pct=0.03, risk_budget_pct=0.005, max_weight=0.10)
+    assert abs(capped_pos.weight - 0.10) < 1e-9
+    assert "max_position" in capped_pos.caps_applied
     capped = compute_size(
         stop_distance_pct=0.01, risk_budget_pct=0.02, max_weight=0.05,
         portfolio_exposure=0.78, max_portfolio_exposure=0.80,
