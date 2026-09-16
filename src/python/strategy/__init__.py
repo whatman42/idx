@@ -16,11 +16,14 @@ from src.python.strategy.evaluator import (
     EvaluatorConfig,
     StrategyEvaluator,
     evaluate_rule_sma20,
-    evaluate_trend_multi,
     sma20_signal_fn,
 )
 from src.python.strategy.feature_snapshot import FeatureSnapshot, assert_required_features_registered
-from src.python.strategy.feature_pipeline import rule_sma20_feature_signal_fn, signal_fn_from_scorer
+from src.python.strategy.feature_pipeline import (
+    rule_sma20_feature_signal_fn,
+    signal_fn_from_scorer,
+    evaluate_trend_multi,
+)
 from src.python.strategy.scorers import RuleSMA20Scorer, TrendMultiScorer, get_scorer
 
 __all__ = [
