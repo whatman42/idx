@@ -1,4 +1,4 @@
-"""Feature pipeline for evaluator (Phase 2A.1).
+"""Feature pipeline for evaluator (Phase 2A.1 / 2B.1).
 
 OHLCV → build_features → FeatureSnapshot path → Strategy Scorer → signals
 
@@ -12,7 +12,7 @@ import pandas as pd
 
 from src.python.features.engine import build_features
 from src.python.features.tiers import FeatureTier
-from src.python.strategy.scorers import RuleSMA20Scorer, get_scorer
+from src.python.strategy.scorers import get_scorer
 
 SignalFn = Callable[[pd.DataFrame], pd.DataFrame]
 
@@ -32,7 +32,6 @@ def signal_fn_from_scorer(
         feat = result.df
         if feat.empty:
             return pd.DataFrame(columns=["timestamp", "symbol", "side", "confidence", "score"])
-        # Label isolation: drop labels before scoring
         drop_cols = [c for c in ("y_next_up", "y") if c in feat.columns]
         if drop_cols:
             feat = feat.drop(columns=drop_cols)
@@ -45,3 +44,17 @@ def signal_fn_from_scorer(
 def rule_sma20_feature_signal_fn(*, max_tier: int = FeatureTier.TIER1_STANDARD) -> SignalFn:
     """Control group wired to sma_dist_20 from Feature Engine."""
     return signal_fn_from_scorer("rule_sma20", max_tier=max_tier)
+
+
+def evaluate_trend_multi(bars: pd.DataFrame, cfg=None):
+    """RESEARCH/SHADOW only: trend_multi via Feature Engine + TrendMultiScorer.
+
+    Does not promote or touch production signal_bot.
+    """
+    from src.python.strategy.evaluator import EvaluatorConfig, StrategyEvaluator, EvidencePackage
+    from src.python.strategy.registry import get_strategy
+
+    if get_strategy("trend_multi").status != "RESEARCH":
+        raise RuntimeError("evaluate_trend_multi blocked: status is not RESEARCH")
+    ev = StrategyEvaluator(cfg)
+    return ev.evaluate("trend_multi", bars, signal_fn_from_scorer("trend_multi"))
