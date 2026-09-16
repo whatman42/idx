@@ -1,10 +1,11 @@
-"""Backtest + Walk-Forward evaluator (Phase 2A).
+"""Backtest + Walk-Forward evaluator (Phase 2A / 2A.1).
 
 Deterministic, no look-ahead (signal_T → execute open_T+1),
 fee/slippage, fixed or risk weight, TP/SL, time exit.
 Produces EvidencePackage for PromotionGate.
 
-Does NOT change live signal path.
+Phase 2A.1: evaluate_rule_sma20 defaults to Feature Engine path
+(rule_sma20_feature_signal_fn → sma_dist_20). Live signal_bot unchanged.
 """
 from __future__ import annotations
 
@@ -55,7 +56,11 @@ def _fee(notional: float, bps: float) -> float:
 
 
 def sma20_signal_fn(lookback: int = 20) -> SignalFn:
-    """Baseline control: close > SMA(lookback) → side=1. No look-ahead."""
+    """LEGACY control: close > SMA(lookback) recomputed on OHLCV.
+
+    Prefer rule_sma20_feature_signal_fn / evaluate_rule_sma20(via_features=True)
+    which uses Feature Engine sma_dist_20 (Phase 2A.1 SSOT).
+    """
 
     def _fn(bars: pd.DataFrame) -> pd.DataFrame:
         rows: list[dict] = []
@@ -117,7 +122,6 @@ def _simulate_segment(
         sig["timestamp"] = pd.to_datetime(sig["timestamp"])
         sig = sig[sig["side"].astype(int) == 1]
 
-    # per-symbol index maps
     by_sym: dict[str, pd.DataFrame] = {
         str(s): g.reset_index(drop=True) for s, g in bars.groupby("symbol", sort=False)
     }
@@ -126,11 +130,8 @@ def _simulate_segment(
     }
 
     open_positions: dict[str, dict] = {}
-
-    # chronological event loop over unique timestamps in segment
     all_ts = sorted(bars["timestamp"].unique())
     for ts in all_ts:
-        # exits first (mark on this bar's OHLC)
         to_close: list[str] = []
         for sym, pos in open_positions.items():
             g = by_sym.get(sym)
@@ -146,7 +147,6 @@ def _simulate_segment(
             bars_held = i - pos["entry_i"]
             exit_reason = None
             exit_px = None
-            # intrabar: SL precedence if both touch
             hit_sl = low <= pos["sl"]
             hit_tp = high >= pos["tp"]
             if hit_sl and hit_tp:
@@ -185,20 +185,18 @@ def _simulate_segment(
         for sym in to_close:
             del open_positions[sym]
 
-        # entries: signals at previous bar → open this bar
         if not sig.empty:
             day_sig = sig[sig["timestamp"] == ts]
             for _, srow in day_sig.iterrows():
                 sym = str(srow["symbol"])
                 if sym in open_positions:
-                    continue  # one position per symbol in evaluator
+                    continue
                 g = by_sym.get(sym)
                 if g is None:
                     continue
                 i = ts_index[sym].get(ts)
                 if i is None or i + 1 >= len(g):
                     continue
-                # execute at NEXT bar open (no look-ahead)
                 entry_i = i + 1
                 entry_row = g.iloc[entry_i]
                 entry_ts = entry_row["timestamp"]
@@ -206,7 +204,7 @@ def _simulate_segment(
                 if raw_open <= 0:
                     continue
                 entry_px = _buy_px(raw_open, cfg.slippage_bps)
-                eq = cash  # simple: size on cash (no multi-position mark)
+                eq = cash
                 target = eq * cfg.weight
                 qty = max(cfg.lot_size, (target / entry_px) // cfg.lot_size * cfg.lot_size)
                 if qty <= 0 or entry_px * qty > cash:
@@ -232,7 +230,6 @@ def _simulate_segment(
                     "tp": tp,
                 }
 
-        # mark equity (cash + MV at close)
         mv = 0.0
         for sym, pos in open_positions.items():
             g = by_sym.get(sym)
@@ -241,7 +238,6 @@ def _simulate_segment(
                 mv += pos["qty"] * float(g.iloc[i]["close"])
         equity_curve.append(cash + mv)
 
-    # force close remaining at last close
     if all_ts:
         last_ts = all_ts[-1]
         for sym, pos in list(open_positions.items()):
@@ -293,7 +289,6 @@ def _simulate_segment(
     gross_loss = abs(sum(losses)) if losses else 0.0
     profit_factor = (gross_win / gross_loss) if gross_loss > 1e-12 else (None if not wins else float("inf"))
     total_return = (final_eq / capital) - 1.0 if capital else 0.0
-    # simple sharpe on trade pnl (not daily) — honest label
     sharpe = None
     if len(pnls) >= 2 and np.std(pnls) > 1e-12:
         sharpe = float(np.mean(pnls) / np.std(pnls) * np.sqrt(len(pnls)))
@@ -316,13 +311,11 @@ def _simulate_segment(
 
 
 def _assert_no_lookahead(signals: pd.DataFrame, bars: pd.DataFrame) -> bool:
-    """Sanity: signal timestamp must exist in bars; entry uses next bar only in simulator."""
     if signals is None or signals.empty:
         return True
     bars_ts = set(pd.to_datetime(bars["timestamp"]).unique())
     for ts in pd.to_datetime(signals["timestamp"]).unique():
         if ts not in bars_ts:
-            # signal on unknown bar is suspicious but not definitive leakage
             continue
     return True
 
@@ -346,14 +339,13 @@ class StrategyEvaluator:
         notes: list[str] = []
 
         if bars is None or bars.empty:
-            pkg = EvidencePackage(
+            return EvidencePackage(
                 strategy_id=strategy_id,
                 signal_defined=True,
                 data_quality_ok=False,
                 hard_rejects=[HardRejectCode.DATA_QUALITY_FAILURE.value],
                 notes=["empty_bars"],
             )
-            return pkg
 
         required = {"timestamp", "symbol", "open", "high", "low", "close"}
         if not required.issubset(set(bars.columns)):
@@ -381,7 +373,6 @@ class StrategyEvaluator:
         if not lookahead_safe:
             rejects.append(HardRejectCode.LOOKAHEAD_DETECTED.value)
 
-        # --- full sample ---
         full = _simulate_segment(bars, signals, cfg, window_id="full")
         n_trades = int(full["n_trades"])
         if n_trades < cfg.min_trades:
@@ -391,8 +382,6 @@ class StrategyEvaluator:
         if full["expectancy"] < cfg.min_expectancy and n_trades > 0:
             rejects.append(HardRejectCode.NEGATIVE_EXPECTANCY.value)
 
-        # --- walk-forward ---
-        # use global timeline length from densest symbol as proxy for windows
         lengths = bars.groupby("symbol").size()
         max_len = int(lengths.max()) if len(lengths) else 0
         wf_windows: list[WindowMetrics] = []
@@ -402,21 +391,15 @@ class StrategyEvaluator:
         while start + cfg.wf_train_bars + cfg.wf_test_bars <= max_len:
             train_end = start + cfg.wf_train_bars
             test_end = train_end + cfg.wf_test_bars
-            # slice each symbol by position
-            train_parts = []
             test_parts = []
             for sym, g in bars.groupby("symbol", sort=False):
                 g = g.reset_index(drop=True)
                 if len(g) < test_end:
                     continue
-                train_parts.append(g.iloc[start:train_end])
                 test_parts.append(g.iloc[train_end:test_end])
             if not test_parts:
                 break
-            train_bars = pd.concat(train_parts, ignore_index=True)
             test_bars = pd.concat(test_parts, ignore_index=True)
-            # signals only from train+test bars independently (no future leak into signal_fn)
-            # For pure rule strategies, signal_fn(test_bars) uses only test history — correct.
             test_signals = signal_fn(test_bars)
             seg = _simulate_segment(test_bars, test_signals, cfg, window_id=f"wf_{wid}")
             wm = WindowMetrics(
@@ -445,7 +428,6 @@ class StrategyEvaluator:
         if wf_n >= cfg.min_wf_periods and wf_pass_rate < 0.5:
             rejects.append(HardRejectCode.UNSTABLE_WF.value)
 
-        # OOS = last WF window if available, else last 20% of timeline
         oos_evaluated = False
         oos_exp = 0.0
         oos_n = 0
@@ -465,21 +447,17 @@ class StrategyEvaluator:
         else:
             notes.append("oos_not_available_no_wf_windows")
 
-        # cost already net in simulation
         exp_after_cost = full["expectancy"]
         if exp_after_cost < cfg.min_expectancy and n_trades > 0:
             if HardRejectCode.COST_ADJUSTED_FAILURE.value not in rejects:
                 rejects.append(HardRejectCode.COST_ADJUSTED_FAILURE.value)
 
-        # regime concentration (optional column on bars)
         regime_evaluated = False
         regimes_tested: list[str] = []
         regime_share: dict[str, float] = {}
         not_single = True
         if regime_col and regime_col in bars.columns and full["trades"]:
             regime_evaluated = True
-            # map trade entry to regime via nearest bar
-            # simplified: use mode of regime on bars
             vc = bars[regime_col].astype(str).value_counts(normalize=True)
             regime_share = {str(k): float(v) for k, v in vc.items()}
             regimes_tested = list(regime_share.keys())
@@ -487,15 +465,13 @@ class StrategyEvaluator:
                 not_single = False
                 rejects.append(HardRejectCode.REGIME_CONCENTRATION.value)
 
-        # stability proxy: std of window expectancies / mean abs
         sensitivity = 1.0
         if len(wf_windows) >= 2:
             exps = [w.expectancy for w in wf_windows]
             mu = float(np.mean(np.abs(exps))) + 1e-9
-            sensitivity = float(np.std(exps) / mu)
-            sensitivity = min(max(sensitivity, 0.0), 2.0)
+            sensitivity = float(min(max(np.std(exps) / mu, 0.0), 2.0))
 
-        pkg = EvidencePackage(
+        return EvidencePackage(
             strategy_id=strategy_id,
             signal_defined=True,
             timing=cfg.timing,
@@ -531,14 +507,24 @@ class StrategyEvaluator:
             hard_rejects=rejects,
             notes=notes,
         )
-        return pkg
 
 
 def evaluate_rule_sma20(
     bars: pd.DataFrame,
     cfg: Optional[EvaluatorConfig] = None,
     lookback: int = 20,
+    *,
+    via_features: bool = True,
 ) -> EvidencePackage:
-    """Control group: baseline SMA20 strategy through the same evaluator."""
+    """Control group: baseline SMA20 through evaluator.
+
+    Phase 2A.1 default: via_features=True → Feature Engine + RuleSMA20Scorer
+    (sma_dist_20), not recomputed SMA on raw OHLCV.
+
+    via_features=False keeps legacy sma20_signal_fn for reconciliation tests.
+    """
     ev = StrategyEvaluator(cfg)
+    if via_features:
+        from src.python.strategy.feature_pipeline import rule_sma20_feature_signal_fn
+        return ev.evaluate("rule_sma20", bars, rule_sma20_feature_signal_fn())
     return ev.evaluate("rule_sma20", bars, sma20_signal_fn(lookback=lookback))
