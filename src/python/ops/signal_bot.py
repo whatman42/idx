@@ -25,6 +25,8 @@ from src.python.ops.paper_portfolio import (
     process_tp_sl_exits, compute_tp_sl,
 )
 from src.python.ops.risk_gate import gate_new_entry, risk_defaults, estimate_open_heat
+from src.python.ops.production_signal import production_signals_from_bars
+from src.python.data.costs import SimulationCostModel, cost_models_summary
 from src.python.validation.economic_sim import simulate_long_only
 from src.python.ops.readiness import assess_readiness
 from src.python.llm.gemini_narrator import narrate_halt
@@ -329,17 +331,35 @@ def run(
         _write_report(art_path, report); print(json.dumps(report, indent=2, default=str)); raise SystemExit(1)
     report["simulation_session_id"] = pf.simulation_session_id
 
-    all_sig = _naive_signals_from_bars(bars)
-    day_sig = _latest_day_signals(all_sig)
-    long_sig = day_sig[day_sig["side"] == 1] if not day_sig.empty else day_sig
+    # FeatureSnapshot SSOT → PROMOTED scorer only (rule_sma20 baseline).
+    # RESEARCH scorers scored as SHADOW for report — never fill.
+    sig_pack = production_signals_from_bars(bars, strategy_id="rule_sma20", include_shadow=True)
+    report["signal_path"] = sig_pack.get("path")
+    report["feature_meta"] = sig_pack.get("feature_meta")
+    report["control_plane"] = sig_pack.get("control_plane")
+    report["shadow_strategies"] = sig_pack.get("shadow_day_summary") or []
+    report["cost_models"] = cost_models_summary()
+    all_sig = sig_pack.get("production_all")
+    if all_sig is None or getattr(all_sig, "empty", True):
+        all_sig = pd.DataFrame(columns=["timestamp", "symbol", "side", "confidence", "score", "close"])
+    day_sig = sig_pack.get("production_day")
+    if day_sig is None or getattr(day_sig, "empty", True):
+        day_sig = pd.DataFrame(columns=["timestamp", "symbol", "side", "confidence", "score"])
+    long_sig = day_sig[day_sig["side"] == 1] if not day_sig.empty and "side" in day_sig.columns else day_sig
+    # Attach close from marks later; ensure confidence column
+    if not long_sig.empty and "confidence" not in long_sig.columns:
+        long_sig = long_sig.copy()
+        long_sig["confidence"] = long_sig.get("score", 0.5)
     report["signals_generated"] = int(len(long_sig))
     report["model"] = model_version
+    report["production_strategy"] = "rule_sma20"
     report["governor_action"] = "ALLOW_PAPER_SIGNAL"
     report["timing"] = "signal_T_execute_open_Tplus1"
-    paper_signals = all_sig.copy()
-    if not paper_signals.empty: paper_signals["side"] = paper_signals["side"].astype(int)
+    paper_signals = all_sig.copy() if not getattr(all_sig, "empty", True) else pd.DataFrame(columns=["timestamp", "symbol", "side"])
+    if not paper_signals.empty and "side" in paper_signals.columns:
+        paper_signals["side"] = paper_signals["side"].astype(int)
     sim = simulate_long_only(bars, paper_signals if not paper_signals.empty else pd.DataFrame(columns=["timestamp","symbol","side"]),
-        cost=CostModel(fee_bps, slippage_bps), hold_bars=hold_bars)
+        cost=SimulationCostModel(fee_bps=fee_bps, slippage_bps=slippage_bps), hold_bars=hold_bars)
     report["paper_fills"] = (sim.get("metrics") or {}).get("total_trades", 0)
     report["safety_status"] = "PASS"
     marks = {}
@@ -365,7 +385,9 @@ def run(
     signal_payloads = []
     for _, r in long_sig.iterrows():
         sym = str(r["symbol"])
-        px = float(r.get("close") or marks.get(sym, 0.0))
+        px = float(r["close"]) if "close" in r.index and pd.notna(r.get("close")) else float(marks.get(sym, 0.0) or 0.0)
+        if px <= 0:
+            px = float(marks.get(sym, 0.0) or 0.0)
         if px <= 0:
             continue
         conf = float(r.get("confidence", 0.5))
@@ -381,7 +403,9 @@ def run(
             "time_stop_bars": emeta.get("time_stop_bars", hold_bars),
             "trailing_pct": emeta.get("trailing_pct", 0.0),
             "sl_pct": emeta.get("sl_pct"), "tp_pct": emeta.get("tp_pct"),
-            "why": f"Ranking confidence ({conf*100:.0f}%) vs SMA20; exit={emeta.get('method')}",
+            "why": f"rule_sma20 via FeatureSnapshot SSOT conf={conf*100:.0f}%; exit={emeta.get('method')}",
+            "strategy_id": "rule_sma20",
+            "signal_path": "FEATURE_SSOT",
         })
     signal_payloads = sorted(signal_payloads, key=lambda x: float(x.get("confidence") or 0), reverse=True)
     report["signals_scanned"] = int(len(signal_payloads))
