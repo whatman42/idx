@@ -3,7 +3,7 @@
 
 Usage:
   python -m scripts.reconcile_ledger --path state/paper_portfolio.json --dry-run
-  python scripts/reconcile_ledger.py --path state/paper_portfolio.json --apply
+  python -m scripts.reconcile_ledger --path state/paper_portfolio.json --apply
 
 Idempotent: rebuild is deterministic from the same trades list.
 Does NOT touch ML models, calibration, or production pointers.
@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+# Allow running from repo root
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from src.python.ops.paper_portfolio import (
@@ -54,6 +55,7 @@ def _dedupe_trades_by_order_id(trades: list[dict[str, Any]]) -> list[dict[str, A
     for tr in trades or []:
         key = str(tr.get("order_id") or tr.get("trade_id") or "")
         if not key:
+            # fallback: signal_id + action + timestamp + symbol
             key = "|".join([
                 str(tr.get("signal_id") or ""),
                 str(tr.get("action") or tr.get("side") or ""),
@@ -87,6 +89,7 @@ def reconcile(
         initial_capital=cap,
         simulation_session_id=current.simulation_session_id,
     )
+    # Preserve session metadata + ledgers from rebuild path
     rebuilt.trades = trades_deduped
     rebuilt.signal_ledger = list(current.signal_ledger or [])
     rebuilt.applied_order_ids = list(current.applied_order_ids or [])
@@ -125,6 +128,8 @@ def reconcile(
     }
 
     if not dry_run and changed:
+        # Archive then write rebuilt
+        store.archive_and_reset  # noqa: keep reference for docs
         archive_dir = path.parent / "sessions"
         archive_dir.mkdir(parents=True, exist_ok=True)
         from datetime import datetime, timezone
