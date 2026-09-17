@@ -58,6 +58,72 @@ VALID_MODES = {"TEST", "PAPER", "OPERATIONAL"}
 TOP_N_SIGNAL = 1
 ENTRY_WEIGHT = 0.05
 
+def _estimate_atr(g: pd.DataFrame, window: int = 14):
+    """True-range ATR from OHLCV group; None if insufficient data."""
+    need = ["high", "low", "close"]
+    if any(c not in g.columns for c in need) or len(g) < window + 1:
+        return None
+    h = g["high"].astype(float)
+    l = g["low"].astype(float)
+    c = g["close"].astype(float)
+    prev_c = c.shift(1)
+    tr = pd.concat([(h - l).abs(), (h - prev_c).abs(), (l - prev_c).abs()], axis=1).max(axis=1)
+    atr = tr.rolling(window).mean().iloc[-1]
+    try:
+        atr_f = float(atr)
+    except (TypeError, ValueError):
+        return None
+    if atr_f != atr_f or atr_f <= 0:
+        return None
+    return atr_f
+
+
+def _atr_map(bars: pd.DataFrame, window: int = 14) -> dict:
+    out = {}
+    if bars is None or getattr(bars, "empty", True) or "symbol" not in bars.columns:
+        return out
+    for sym, g in bars.groupby("symbol"):
+        g = g.sort_values("timestamp") if "timestamp" in g.columns else g
+        atr = _estimate_atr(g, window=window)
+        if atr is not None:
+            out[str(sym)] = atr
+    return out
+
+
+def _exit_levels(entry_px: float, atr, hold_bars: int = 5):
+    """TP/SL via adaptive ExitPlan when ATR available; else static 3%/6%."""
+    try:
+        from src.python.strategy.exits import build_exit_plan
+        plan = build_exit_plan(
+            entry_price=entry_px,
+            atr=atr,
+            atr_sl_mult=2.0,
+            atr_tp_mult=3.0,
+            default_sl_pct=0.03,
+            default_tp_pct=0.06,
+            trailing_pct=0.03 if atr is not None else None,
+            time_stop_bars=int(hold_bars or 5),
+        )
+        tp = round(entry_px * (1.0 + plan.tp_pct), 2)
+        sl = round(entry_px * (1.0 - plan.sl_pct), 2)
+        meta = {
+            "sl_pct": float(plan.sl_pct),
+            "tp_pct": float(plan.tp_pct),
+            "method": plan.method,
+            "time_stop_bars": int(plan.time_stop_bars),
+            "trailing_pct": float(plan.trailing_pct or 0.0),
+            "rrr": round(plan.tp_pct / plan.sl_pct, 2) if plan.sl_pct > 0 else 2.0,
+        }
+        return tp, sl, meta
+    except Exception:
+        tp = round(entry_px * 1.06, 2)
+        sl = round(entry_px * 0.97, 2)
+        return tp, sl, {
+            "sl_pct": 0.03, "tp_pct": 0.06, "method": "static_pct",
+            "time_stop_bars": int(hold_bars or 5), "trailing_pct": 0.0, "rrr": 2.0,
+        }
+
+
 def _now_jkt() -> datetime:
     return datetime.now(JKT)
 
@@ -196,7 +262,7 @@ def run(
         "symbols_requested_count": len(syms),
         "scan_mode": "FULL_UNIVERSE" if len(syms) > 50 else "SUBSET",
         "top_n_signal": TOP_N_SIGNAL,
-        "risk_geometry": {"sl_pct": 0.03, "tp_pct": 0.06, "rrr": "1:2"},
+        "risk_geometry": {"sl_pct": 0.03, "tp_pct": 0.06, "rrr": "1:2", "engine": "adaptive_atr_v1"},
     }
     ok_sched, sched_reason = _is_market_hours_ok(force=force_schedule or mode == "TEST")
     report["schedule"] = {"ok": ok_sched, "reason": sched_reason}
@@ -283,18 +349,34 @@ def run(
     report["exits_today"] = exits
     report["exits_count"] = len(exits)
 
+    atr_by_sym = _atr_map(bars)
+    report["exit_engine"] = {
+        "mode": "adaptive_atr_v1",
+        "fallback": "static_3_6",
+        "symbols_with_atr": len(atr_by_sym),
+        "time_stop_bars_default": int(hold_bars),
+        "trailing_pct_when_atr": 0.03,
+    }
     signal_payloads = []
     for _, r in long_sig.iterrows():
         sym = str(r["symbol"])
         px = float(r.get("close") or marks.get(sym, 0.0))
         if px <= 0:
             continue
-        tp, sl = compute_tp_sl(px)
         conf = float(r.get("confidence", 0.5))
+        # Entry noise filter: require meaningful distance above SMA (confidence proxy)
+        if conf < 0.005:
+            continue
+        tp, sl, emeta = _exit_levels(px, atr_by_sym.get(sym), hold_bars=hold_bars)
         signal_payloads.append({
             "symbol": sym, "side_label": "BUY", "signal": "BUY", "confidence": conf,
-            "price": px, "entry_price": px, "tp": tp, "sl": sl, "risk": "PASS", "rrr": 2.0,
-            "why": f"Ranking #1 confidence ({conf*100:.0f}%) vs SMA20 di universe hari ini",
+            "price": px, "entry_price": px, "tp": tp, "sl": sl, "risk": "PASS",
+            "rrr": emeta.get("rrr", 2.0),
+            "exit_method": emeta.get("method", "static_pct"),
+            "time_stop_bars": emeta.get("time_stop_bars", hold_bars),
+            "trailing_pct": emeta.get("trailing_pct", 0.0),
+            "sl_pct": emeta.get("sl_pct"), "tp_pct": emeta.get("tp_pct"),
+            "why": f"Ranking confidence ({conf*100:.0f}%) vs SMA20; exit={emeta.get('method')}",
         })
     signal_payloads = sorted(signal_payloads, key=lambda x: float(x.get("confidence") or 0), reverse=True)
     report["signals_scanned"] = int(len(signal_payloads))
@@ -325,6 +407,9 @@ def run(
             pf, symbol=sym, price=px, weight=ENTRY_WEIGHT, signal_id=sid, timestamp=ts,
             fee_bps=fee_bps, slippage_bps=slippage_bps, tp=float(s["tp"]), sl=float(s["sl"]),
             allow_scale_in=False,
+            time_stop_bars=int(s.get("time_stop_bars") or hold_bars or 0),
+            trailing_pct=float(s.get("trailing_pct") or 0.0),
+            exit_method=str(s.get("exit_method") or "static_pct"),
         )
         if cls == "FULL_FILL":
             open_syms.add(sym)
