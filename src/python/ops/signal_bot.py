@@ -304,6 +304,7 @@ def run(
 
     fills_cls = []
     filled_trades = []
+    open_syms = set(pf.open_positions().keys())
     for s in portfolio_candidates:
         sym = str(s["symbol"])
         ts = last_ts.get(sym, trading_date)
@@ -312,10 +313,21 @@ def run(
         if px <= 0:
             fills_cls.append("SKIPPED_INVALID_DATA")
             continue
+        # Ops policy: no second long while position still open (anti double-entry / fee bleed)
+        if sym in open_syms:
+            fills_cls.append("SKIPPED_EXISTING_POSITION")
+            s.update({
+                "fill_status": "SKIPPED_EXISTING_POSITION",
+                "why": s.get("why", "") + " | fill=SKIPPED_EXISTING_POSITION (already holding)",
+            })
+            continue
         pf, trade, cls = apply_long_entry(
             pf, symbol=sym, price=px, weight=ENTRY_WEIGHT, signal_id=sid, timestamp=ts,
             fee_bps=fee_bps, slippage_bps=slippage_bps, tp=float(s["tp"]), sl=float(s["sl"]),
+            allow_scale_in=False,
         )
+        if cls == "FULL_FILL":
+            open_syms.add(sym)
         fills_cls.append(cls)
         if trade:
             filled_trades.append(trade)
@@ -346,6 +358,12 @@ def run(
     report["paper_portfolio"] = portfolio_summary(pf, marks)
     report["paper_fill_classifications"] = fills_cls
     report["filled_trades"] = filled_trades
+    # Explicit skip counters for daily audit trail
+    report["skipped_existing_position"] = sum(1 for c in fills_cls if c == "SKIPPED_EXISTING_POSITION")
+    report["skipped_cooldown"] = sum(1 for c in fills_cls if c == "SKIPPED_COOLDOWN")
+    report["skipped_cash"] = sum(1 for c in fills_cls if c == "SKIPPED_CASH")
+    report["fills_full"] = sum(1 for c in fills_cls if c == "FULL_FILL")
+    report["fills_already_applied"] = sum(1 for c in fills_cls if c == "ALREADY_APPLIED")
     report["top_signal"] = top1[0] if top1 else None
     rr = assess_readiness(
         signal_bot_ok=True,
