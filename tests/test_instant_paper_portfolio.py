@@ -388,3 +388,55 @@ def test_signal_id_idempotent_same_order():
     assert c2 == "ALREADY_APPLIED"
     assert t2 is None
     assert st.cash == cash1
+
+
+def test_time_stop_exit():
+    st = new_session()
+    st, t1, c1 = apply_long_entry(
+        st, symbol="BBCA", price=9000.0, weight=0.10, signal_id="ts1",
+        timestamp="2026-09-01", fee_bps=0, slippage_bps=0,
+        time_stop_bars=3, trailing_pct=0.0,
+    )
+    assert c1 == "FULL_FILL"
+    # day+1, +2: still open (mark between SL/TP)
+    st, closed = process_tp_sl_exits(st, {"BBCA": 9100.0}, "2026-09-02", fee_bps=0, slippage_bps=0)
+    assert closed == []
+    st, closed = process_tp_sl_exits(st, {"BBCA": 9100.0}, "2026-09-03", fee_bps=0, slippage_bps=0)
+    assert closed == []
+    # day+3 from entry (>=3 days) -> TIME_STOP
+    st, closed = process_tp_sl_exits(st, {"BBCA": 9100.0}, "2026-09-04", fee_bps=0, slippage_bps=0)
+    assert len(closed) == 1
+    assert closed[0]["reason"] == "TIME_STOP"
+    assert "BBCA" not in st.open_positions()
+
+
+def test_trailing_stop_ratchets_and_exits():
+    st = new_session()
+    st, t1, c1 = apply_long_entry(
+        st, symbol="TLKM", price=4000.0, weight=0.10, signal_id="tr1",
+        timestamp="2026-09-01", fee_bps=0, slippage_bps=0,
+        tp=5000.0, sl=3800.0, trailing_pct=0.05, time_stop_bars=0,
+    )
+    assert c1 == "FULL_FILL"
+    # price rises -> peak updates, SL trails to 95% of peak
+    st, closed = process_tp_sl_exits(st, {"TLKM": 4400.0}, "2026-09-02", fee_bps=0, slippage_bps=0)
+    assert closed == []
+    pos = st.open_positions()["TLKM"]
+    assert pos.peak_mark >= 4400.0 - 1e-9
+    assert pos.sl >= 4400.0 * 0.95 - 1.0  # trailed up
+    # drop through trailed SL
+    trail_sl = float(pos.sl)
+    st, closed = process_tp_sl_exits(st, {"TLKM": trail_sl - 1.0}, "2026-09-03", fee_bps=0, slippage_bps=0)
+    assert len(closed) == 1
+    assert closed[0]["reason"] == "SL_HIT"
+
+
+def test_exit_plan_atr_vs_static():
+    from src.python.strategy.exits import build_exit_plan
+    plan = build_exit_plan(entry_price=1000.0, atr=20.0, time_stop_bars=5, trailing_pct=0.03)
+    assert plan.method.startswith("atr")
+    assert plan.sl_pct > 0 and plan.tp_pct > plan.sl_pct
+    assert plan.time_stop_bars == 5
+    plan2 = build_exit_plan(entry_price=1000.0, atr=None, time_stop_bars=5)
+    assert plan2.method == "static_pct"
+    assert abs(plan2.sl_pct - 0.03) < 1e-9 and abs(plan2.tp_pct - 0.06) < 1e-9
