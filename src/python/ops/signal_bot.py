@@ -24,6 +24,7 @@ from src.python.ops.paper_portfolio import (
     mark_to_market, new_session, summary as portfolio_summary, paper_reset_scope,
     process_tp_sl_exits, compute_tp_sl,
 )
+from src.python.ops.risk_gate import gate_new_entry, risk_defaults, estimate_open_heat
 from src.python.validation.economic_sim import simulate_long_only
 from src.python.ops.readiness import assess_readiness
 from src.python.llm.gemini_narrator import narrate_halt
@@ -55,8 +56,8 @@ def _telegram_text_from_cycle(cycle, report: dict) -> tuple:
 app = typer.Typer(add_completion=False)
 JKT = ZoneInfo("Asia/Jakarta")
 VALID_MODES = {"TEST", "PAPER", "OPERATIONAL"}
-TOP_N_SIGNAL = 1
-ENTRY_WEIGHT = 0.05
+TOP_N_SIGNAL = 3  # rank top-N; risk_gate decides how many actually fill
+ENTRY_WEIGHT = 0.05  # fallback only if risk_gate unavailable
 
 def _estimate_atr(g: pd.DataFrame, window: int = 14):  # ATR_WINDOW
     """True-range ATR from OHLCV group; None if insufficient data."""
@@ -391,6 +392,12 @@ def run(
     fills_cls = []
     filled_trades = []
     open_syms = set(pf.open_positions().keys())
+    new_entries_today = 0
+    eq0 = float(pf.equity(marks))
+    dd0 = float(pf.drawdown(marks))
+    exp0 = float(pf.exposure(marks))
+    report["risk_gate"] = risk_defaults()
+    report["portfolio_heat_pre"] = estimate_open_heat(pf.positions, equity=eq0)
     for s in portfolio_candidates:
         sym = str(s["symbol"])
         ts = last_ts.get(sym, trading_date)
@@ -407,8 +414,32 @@ def run(
                 "why": s.get("why", "") + " | fill=SKIPPED_EXISTING_POSITION (already holding)",
             })
             continue
+        # Institutional risk gate: 1% risk / ATR stop → weight; heat/DD/max-pos fail-closed
+        stop_pct = float(s.get("sl_pct") or 0.0)
+        if stop_pct <= 0 and px > 0 and float(s.get("sl") or 0) > 0:
+            stop_pct = max(0.0, (px - float(s["sl"])) / px)
+        if stop_pct <= 0:
+            stop_pct = 0.03
+        gate = gate_new_entry(
+            equity=float(pf.equity(marks)),
+            cash=float(pf.cash),
+            open_positions=pf.positions,
+            current_drawdown=float(pf.drawdown(marks)),
+            stop_distance_pct=stop_pct,
+            portfolio_exposure=float(pf.exposure(marks)),
+            new_entries_today=new_entries_today,
+        )
+        s["risk_gate"] = gate.to_dict()
+        if not gate.allow_entry:
+            fills_cls.append(f"SKIPPED_RISK_{gate.reason}")
+            s.update({
+                "fill_status": f"SKIPPED_RISK_{gate.reason}",
+                "why": s.get("why", "") + f" | risk_gate={gate.reason}",
+            })
+            continue
+        entry_weight = float(gate.weight) if gate.weight > 0 else ENTRY_WEIGHT
         pf, trade, cls = apply_long_entry(
-            pf, symbol=sym, price=px, weight=ENTRY_WEIGHT, signal_id=sid, timestamp=ts,
+            pf, symbol=sym, price=px, weight=entry_weight, signal_id=sid, timestamp=ts,
             fee_bps=fee_bps, slippage_bps=slippage_bps, tp=float(s["tp"]), sl=float(s["sl"]),
             allow_scale_in=False,
             time_stop_bars=int(s.get("time_stop_bars") or hold_bars or 0),
@@ -417,6 +448,7 @@ def run(
         )
         if cls == "FULL_FILL":
             open_syms.add(sym)
+            new_entries_today += 1
         fills_cls.append(cls)
         if trade:
             filled_trades.append(trade)
@@ -452,6 +484,8 @@ def run(
     report["skipped_cooldown"] = sum(1 for c in fills_cls if c == "SKIPPED_COOLDOWN")
     report["skipped_cash"] = sum(1 for c in fills_cls if c == "SKIPPED_CASH")
     report["fills_full"] = sum(1 for c in fills_cls if c == "FULL_FILL")
+    report["portfolio_heat_post"] = estimate_open_heat(pf.positions, equity=float(pf.equity(marks)))
+    report["risk_skips"] = sum(1 for c in fills_cls if str(c).startswith("SKIPPED_RISK_"))
     report["fills_already_applied"] = sum(1 for c in fills_cls if c == "ALREADY_APPLIED")
     report["top_signal"] = top1[0] if top1 else None
     rr = assess_readiness(
