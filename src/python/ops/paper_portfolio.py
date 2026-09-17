@@ -102,6 +102,11 @@ class PaperPosition:
     last_mark: float = 0.0
     tp: float = 0.0
     sl: float = 0.0
+    # Adaptive exit state (optional; defaults keep static 3%/6% behavior)
+    peak_mark: float = 0.0
+    time_stop_bars: int = 0  # 0 = disabled
+    trailing_pct: float = 0.0  # 0 = disabled; e.g. 0.03 = trail 3% from peak
+    exit_method: str = "static_pct"
 
     def market_value(self, mark: Optional[float] = None) -> float:
         m = float(mark if mark is not None else self.last_mark or self.avg_entry)
@@ -294,6 +299,9 @@ def apply_long_entry(
     sl: Optional[float] = None,
     allow_scale_in: bool = False,
     min_reentry_days: int = 0,
+    time_stop_bars: int = 0,
+    trailing_pct: float = 0.0,
+    exit_method: str = "static_pct",
 ):
     order = f"{signal_id}|BUY|{symbol}"
     oid = "ord_" + hashlib.sha256(order.encode()).hexdigest()[:16]
@@ -349,6 +357,10 @@ def apply_long_entry(
             last_mark=float(exec_px),
             tp=float(tp if tp else existing.tp),
             sl=float(sl if sl else existing.sl),
+            peak_mark=max(float(existing.peak_mark or 0), float(exec_px)),
+            time_stop_bars=int(time_stop_bars or existing.time_stop_bars or 0),
+            trailing_pct=float(trailing_pct or existing.trailing_pct or 0),
+            exit_method=str(exit_method or existing.exit_method or "static_pct"),
         )
     else:
         pos = PaperPosition(
@@ -361,6 +373,10 @@ def apply_long_entry(
             last_mark=float(exec_px),
             tp=float(tp),
             sl=float(sl),
+            peak_mark=float(exec_px),
+            time_stop_bars=int(time_stop_bars or 0),
+            trailing_pct=float(trailing_pct or 0),
+            exit_method=str(exit_method or "static_pct"),
         )
     state.positions[symbol] = asdict(pos)
     state.applied_order_ids = (state.applied_order_ids + [oid])[-5000:]
@@ -483,25 +499,65 @@ def process_tp_sl_exits(
     fee_bps: float = SIM_FEE_EXIT_BPS,
     slippage_bps: float = SIM_SLIPPAGE_BPS,
 ):
+    """Evaluate exits: SL / TP / trailing stop / time-stop (calendar days ≈ bars).
+
+    Priority (fail-closed, conservative):
+      1. SL_HIT (static or trailed stop)
+      2. TP_HIT
+      3. TIME_STOP (if time_stop_bars > 0 and days held >= limit)
+    Trailing ratchets SL up with peak_mark; never loosens stop.
+    """
     closed = []
     for sym, pos in list(state.open_positions().items()):
         mark = marks.get(sym)
         if mark is None or mark <= 0:
             continue
+        mark = float(mark)
+        # Update peak + optional trailing ratchet on live position dict
+        pdict = state.positions.get(sym)
+        if isinstance(pdict, dict):
+            peak = max(float(pdict.get("peak_mark") or 0), float(pos.peak_mark or 0), mark)
+            pdict["peak_mark"] = peak
+            pdict["last_mark"] = mark
+            trail = float(pdict.get("trailing_pct") or pos.trailing_pct or 0)
+            if trail > 0 and peak > 0:
+                trailed_sl = peak * (1.0 - trail)
+                cur_sl = float(pdict.get("sl") or pos.sl or 0)
+                # only tighten (raise) stop for long
+                if trailed_sl > cur_sl:
+                    pdict["sl"] = round(trailed_sl, 2)
+            state.positions[sym] = pdict
+            pos = state.open_positions()[sym]
+
         reason = None
-        exit_px = float(mark)
+        exit_px = mark
         if pos.sl and pos.sl > 0 and mark <= pos.sl:
             reason = "SL_HIT"
-            exit_px = min(float(mark), float(pos.sl))
+            exit_px = min(mark, float(pos.sl))
         elif pos.tp and pos.tp > 0 and mark >= pos.tp:
             reason = "TP_HIT"
-            exit_px = max(float(mark), float(pos.tp))
+            exit_px = max(mark, float(pos.tp))
+        else:
+            # time-stop: calendar-day distance from entry_timestamp
+            tsb = int(pos.time_stop_bars or 0)
+            if tsb > 0 and pos.entry_timestamp and len(str(timestamp)) >= 10 and len(str(pos.entry_timestamp)) >= 10:
+                try:
+                    from datetime import datetime as _dt
+                    t_now = _dt.strptime(str(timestamp)[:10], "%Y-%m-%d")
+                    t_en = _dt.strptime(str(pos.entry_timestamp)[:10], "%Y-%m-%d")
+                    held = (t_now - t_en).days
+                    if held >= tsb:
+                        reason = "TIME_STOP"
+                        exit_px = mark
+                except Exception:
+                    pass
         if reason:
             state, trade, cls = apply_exit(
                 state, symbol=sym, price=exit_px, timestamp=timestamp,
                 reason=reason, fee_bps=fee_bps, slippage_bps=slippage_bps,
             )
             if trade:
+                trade["exit_method"] = pos.exit_method
                 closed.append(trade)
     return state, closed
 
