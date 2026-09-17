@@ -1,22 +1,28 @@
 """Position sizing — risk budget / stop distance, then hard caps.
 
-Size = risk_budget / stop_distance
-then min(liquidity, max_position, portfolio_exposure, correlation, regime).
+Industry pattern (Abu AtrPosition, Van Tharp, quant desks):
+  weight = risk_budget_pct / stop_distance_pct
+  then min(max_weight, liquidity, remaining exposure, regime scale).
+
+Aligned with ops.risk_gate defaults (1% risk, 12% max weight).
 """
 from __future__ import annotations
 
 from src.python.strategy.contracts import RegimeState, SizePlan
 
+DEFAULT_RISK_BUDGET = 0.01
+DEFAULT_MAX_WEIGHT = 0.12
+
 
 def compute_size(
     *,
     stop_distance_pct: float,
-    risk_budget_pct: float = 0.005,
-    max_weight: float = 0.10,
+    risk_budget_pct: float = DEFAULT_RISK_BUDGET,
+    max_weight: float = DEFAULT_MAX_WEIGHT,
     min_weight: float = 0.0,
     liquidity_cap: float = 1.0,
     portfolio_exposure: float = 0.0,
-    max_portfolio_exposure: float = 0.80,
+    max_portfolio_exposure: float = 0.70,
     regime: RegimeState | None = None,
     fixed_weight: float | None = None,
 ) -> SizePlan:
