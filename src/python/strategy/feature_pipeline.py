@@ -1,8 +1,9 @@
-"""Feature pipeline for evaluator (Phase 2A.1 / 2B.1).
+"""Feature pipeline — shared Feature Engine path for research AND ops.
 
 OHLCV → build_features → FeatureSnapshot path → Strategy Scorer → signals
 
-Production signal_bot is NOT modified.
+Ops production uses the same SSOT via ops.production_signal
+(PROMOTED scorers only; RESEARCH stays SHADOW).
 """
 from __future__ import annotations
 
