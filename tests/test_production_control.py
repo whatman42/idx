@@ -38,7 +38,7 @@ def test_assert_blocks_research():
 
 def test_control_plane_summary():
     s = control_plane_summary()
-    assert s["version"] == "production_control_v1"
+    assert s["version"] == "production_control_v2"
     assert "rule_sma20" in s["production"]
 
 

@@ -1,24 +1,35 @@
-"""Production control plane — Promotion status binds ops path.
+"""Production control plane — only PROMOTED may fill.
 
-Statuses:
-  RESEARCH  → blocked from production fills; may appear in SHADOW report
-  SHADOW    → scored in ops for comparison only; never fills
-  PROMOTED  → eligible for production signal → risk gate → paper fill
-  REJECTED / EXPIRED / RETIRED → blocked
+Statuses (StrategyLifecycle):
+  RESEARCH   → shadow/report only
+  EVALUATED  → evidence collected; no fill
+  CANDIDATE  → evidence gate passed; awaiting authority; no fill
+  PROMOTED   → production path allowed
+  REJECTED   → blocked
+  RETIRED    → blocked
 
-SMA20 (rule_sma20) remains the only PROMOTED baseline until EvidencePackage
-clears PromotionGate for a challenger.
+Performance does not execute. Authority + status does.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
-from typing import Any, Optional
+from dataclasses import asdict, dataclass
+from typing import Any
 
+from src.python.strategy.contracts import StrategyLifecycle
 from src.python.strategy.registry import STRATEGY_REGISTRY, get_strategy, list_strategies, promoted_ids
 
-PRODUCTION_ELIGIBLE = frozenset({"PROMOTED"})
-SHADOW_ELIGIBLE = frozenset({"RESEARCH", "SHADOW", "CANDIDATE"})
-BLOCKED = frozenset({"REJECTED", "EXPIRED", "RETIRED"})
+PRODUCTION_ELIGIBLE = frozenset({StrategyLifecycle.PROMOTED.value, "PROMOTED"})
+SHADOW_ELIGIBLE = frozenset({
+    StrategyLifecycle.RESEARCH.value,
+    StrategyLifecycle.EVALUATED.value,
+    StrategyLifecycle.CANDIDATE.value,
+    "RESEARCH", "EVALUATED", "CANDIDATE", "SHADOW",
+})
+BLOCKED = frozenset({
+    StrategyLifecycle.REJECTED.value,
+    StrategyLifecycle.RETIRED.value,
+    "REJECTED", "RETIRED", "EXPIRED",
+})
 
 
 @dataclass
@@ -44,7 +55,7 @@ def eligibility(strategy_id: str) -> StrategyEligibility:
             shadow_allowed=False,
             reason="unknown_strategy",
         )
-    status = str(spec.status or "RESEARCH").upper()
+    status = str(spec.status or StrategyLifecycle.RESEARCH.value).upper()
     if status in BLOCKED:
         return StrategyEligibility(strategy_id, status, False, False, f"blocked:{status}")
     prod = status in PRODUCTION_ELIGIBLE
@@ -59,6 +70,7 @@ def eligibility(strategy_id: str) -> StrategyEligibility:
 
 
 def assert_production_allowed(strategy_id: str) -> None:
+    """Runtime enforcement — never score>threshold based."""
     e = eligibility(strategy_id)
     if not e.production_allowed:
         raise RuntimeError(
@@ -84,6 +96,7 @@ def control_plane_summary() -> dict[str, Any]:
         "production": production_strategy_ids(),
         "shadow": shadow_strategy_ids(),
         "registry_count": len(STRATEGY_REGISTRY),
-        "enforcement": "ops_path_requires_PROMOTED",
-        "version": "production_control_v1",
+        "enforcement": "ops_path_requires_PROMOTED_status_only",
+        "lifecycle": [s.value for s in StrategyLifecycle],
+        "version": "production_control_v2",
     }
