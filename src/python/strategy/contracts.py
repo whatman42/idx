@@ -4,13 +4,24 @@ Pipeline target:
   Market Data → DQ → Features → Regime → Multi-Strategy Alpha → ML Ensemble
   → Governor → Position Sizing → Entry/Exit → Risk → OrderIntent
 
-No strategy enters production without PromotionGate PASS.
+No strategy enters production without PromotionGate PASS + explicit authority.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
+
+
+
+class StrategyLifecycle(str, Enum):
+    """Granular lifecycle — only PROMOTED may fill production."""
+    RESEARCH = "RESEARCH"
+    EVALUATED = "EVALUATED"
+    CANDIDATE = "CANDIDATE"
+    PROMOTED = "PROMOTED"
+    REJECTED = "REJECTED"
+    RETIRED = "RETIRED"
 
 
 class StrategyFamily(str, Enum):
@@ -41,7 +52,7 @@ class StrategySpec:
     required_features: tuple[str, ...] = ()
     compatible_regimes: tuple[str, ...] = ()  # empty = all
     default_weight: float = 1.0
-    status: str = "RESEARCH"  # RESEARCH | CANDIDATE | PROMOTED | RETIRED
+    status: str = "RESEARCH"  # RESEARCH | EVALUATED | CANDIDATE | PROMOTED | REJECTED | RETIRED
 
 
 @dataclass
