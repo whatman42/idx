@@ -14,15 +14,23 @@ from src.python.learning.contracts import (
     FailureRecord,
     HealthReport,
     Hypothesis,
+    IntegrityResult,
     LearningStatus,
     MetaDecision,
     SignalEpisode,
 )
 from src.python.learning.counterfactual import analyze_counterfactuals
 from src.python.learning.drift import drift_from_episodes, performance_drift
+from src.python.learning.episodes import (
+    EpisodeStore,
+    episode_from_closed_trade,
+    ingest_closed_trades_from_portfolio,
+    make_idempotency_key,
+)
 from src.python.learning.experiment import ExperimentLedger, evaluate_experiment_to_candidacy
 from src.python.learning.failure_memory import FailureMemory
 from src.python.learning.hypothesis import generate_hypotheses_from_failures
+from src.python.learning.integrity import gate_learning_on_integrity, reconcile_episode_pnl
 from src.python.learning.introspection import diagnose
 from src.python.learning.knowledge import KnowledgeBase
 from src.python.learning.loop import LearningLoop
@@ -38,6 +46,7 @@ __all__ = [
     "MetaDecision",
     "HealthReport",
     "LearningStatus",
+    "IntegrityResult",
     "attribute_episode",
     "attribute_batch",
     "analyze_counterfactuals",
@@ -51,4 +60,10 @@ __all__ = [
     "diagnose",
     "KnowledgeBase",
     "LearningLoop",
+    "EpisodeStore",
+    "episode_from_closed_trade",
+    "ingest_closed_trades_from_portfolio",
+    "make_idempotency_key",
+    "reconcile_episode_pnl",
+    "gate_learning_on_integrity",
 ]
