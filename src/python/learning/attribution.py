@@ -29,6 +29,7 @@ def attribute_episode(ep: SignalEpisode) -> AttributionReport:
 
     regime = (ep.regime or "unknown").lower()
     r = float(ep.r_multiple or 0.0)
+    pnl = float(ep.pnl or 0.0)
 
     if ep.outcome == EpisodeOutcome.LOSS.value or r < -0.25:
         if "sideways" in regime or "neutral" in regime:
@@ -70,6 +71,7 @@ def attribute_episode(ep: SignalEpisode) -> AttributionReport:
         feature_highlights=_top_features(ep.feature_snapshot),
         root_cause_candidates=causes or [RootCauseCandidate.NONE.value],
         notes=notes,
+        pnl=pnl,
     )
 
 
