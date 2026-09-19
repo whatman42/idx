@@ -33,6 +33,15 @@ class EpisodeOutcome(str, Enum):
     SKIPPED = "SKIPPED"
 
 
+class EpisodeLifecycle(str, Enum):
+    """Explicit lifecycle — missing exit must NOT silently become COMPLETED."""
+    OPEN = "OPEN"
+    COMPLETED = "COMPLETED"
+    ATTRIBUTED = "ATTRIBUTED"
+    INVALID = "INVALID"
+    BLOCKED = "BLOCKED"
+
+
 class RootCauseCandidate(str, Enum):
     FALSE_BREAKOUT = "FALSE_BREAKOUT"
     LATE_ENTRY = "LATE_ENTRY"
@@ -60,6 +69,7 @@ class SignalEpisode:
     """One closed decision path: signal → fill → exit → outcome.
 
     Deterministic facts only. LLM may interpret, never invent these fields.
+    Phase-1: ONE fill → ONE episode via idempotency_key.
     """
     episode_id: str
     trading_date: str
@@ -80,6 +90,14 @@ class SignalEpisode:
     r_multiple: float = 0.0
     pnl: float = 0.0
     outcome: str = EpisodeOutcome.OPEN.value
+    signal_id: str = ""
+    fill_id: str = ""
+    entry_trade_id: str = ""
+    idempotency_key: str = ""
+    lifecycle: str = EpisodeLifecycle.OPEN.value
+    qty: float = 0.0
+    cost_basis: float = 0.0
+    fees: float = 0.0
     meta: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -98,6 +116,7 @@ class AttributionReport:
     feature_highlights: dict[str, float] = field(default_factory=dict)
     root_cause_candidates: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    pnl: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -228,6 +247,23 @@ class DriftAlert:
     threshold: float
     status: str
     detail: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class IntegrityResult:
+    """Learning data integrity check — Ledger remains SSOT."""
+    ok: bool
+    ledger_pnl: float = 0.0
+    episode_pnl: float = 0.0
+    attribution_pnl: float = 0.0
+    delta_ledger_episode: float = 0.0
+    delta_episode_attribution: float = 0.0
+    issues: list[str] = field(default_factory=list)
+    learning_data_integrity: str = "PASS"
+    blocked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
