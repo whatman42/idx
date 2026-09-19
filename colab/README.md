@@ -6,7 +6,7 @@
 
 | Surface | Role |
 |---------|------|
-| **GitHub Actions** | Daily operational signals (`ops_sma_v0`), paper portfolio |
+| **GitHub Actions** | Daily operational signals (`rule_sma20` (legacy ops_sma_v0)), paper portfolio |
 | **Google Colab** | Heavy / weekend ML **candidate** training & research |
 | **Telegram** | Output only |
 | **Paper portfolio** | Measurement only (not live trading) |
@@ -18,12 +18,6 @@
 - **Budget** — `COLAB_TRAINING_BUDGET_SEC` (default **1200**)
 - **Economic edge** — remains **UNVERIFIED** until valid forward/OOS evidence
 - Paper reset ≠ model/Governor/shadow reset
-
-## Notebook notes
-
-- Clone cell uses **Python `subprocess`** (not `!git … -b $REF`) so `IDX_REF` / `IDX_REPO` env vars work reliably.
-- Cell 6 asserts: no promotion, pointer unchanged, edge UNVERIFIED, live_execution=false.
-- `promote=True` is still force-rejected inside `run_colab_training`.
 
 ## How to run
 

@@ -1,3 +1,7 @@
+"""ML candidate promotion helper. Strategy production uses strategy.promotion_gate (authority required).
+
+Never treats positive metrics alone as promotion. ECONOMIC_EDGE remains UNVERIFIED here.
+"""
 from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
@@ -19,4 +23,5 @@ def evaluate_promotion(metrics: dict[str, Any], *, min_accuracy: float = 0.52,
         return PromotionReport(False, "expectancy_non_positive")
     if raw_dd is not None and float(raw_dd) > max_drawdown:
         return PromotionReport(False, "drawdown_exceeded")
+    # Hard policy: never auto-approve until edge verified + authority (see strategy.promotion_gate)
     return PromotionReport(False, "default_promote_false")

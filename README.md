@@ -49,7 +49,7 @@ Narrator is **advisory only** — does not change signals, portfolio, or product
 
 | Surface | Role |
 |---------|------|
-| GitHub Actions | Daily **operational** signals + paper portfolio (`ops_sma_v0`) |
+| GitHub Actions | Daily **operational** signals + paper portfolio (`rule_sma20` production baseline; legacy id `ops_sma_v0`) |
 | [Google Colab](colab/IDX_GPU_TRAINING.ipynb) | Weekend/heavy **candidate** training (Governor-gated, no auto-promote) |
 | Telegram | Portfolio dashboard notifications only |
 
@@ -58,3 +58,13 @@ Narrator is **advisory only** — does not change signals, portfolio, or product
 - Default training budget: `COLAB_TRAINING_BUDGET_SEC=1200`
 - GPU is **optional**; CPU fallback is always supported
 - Economic edge remains **UNVERIFIED** until valid forward/OOS evidence
+
+## Strategy naming (canonical)
+
+| ID | Role |
+|----|------|
+| **`rule_sma20`** | **Production / PROMOTED** baseline (FeatureSnapshot SSOT) |
+| `ops_sma_v0` | Legacy label for the same rule path (paper `model_version` field may still show this) |
+
+Challengers (`trend_multi`, ML families, etc.) stay RESEARCH/shadow until PromotionGate + **human authority**.
+Economic edge remains **UNVERIFIED** until valid forward/OOS evidence.
