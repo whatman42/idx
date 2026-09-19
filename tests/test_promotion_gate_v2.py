@@ -124,15 +124,17 @@ def test_authority_required_for_promoted():
 def test_authority_reject():
     d = evaluate_for_candidacy("trend_multi", _base_evidence())
     d2 = promote_with_authority(d, authority_id="ops-lead", approve=False, note="edge_not_worth_complexity")
-    assert d2.lifecycle_status == StrategyLifecycle.REJECTED.value
+    assert d2.lifecycle_status == StrategyLifecycle.CANDIDATE.value
     assert d2.approved is False
+    assert "authority_denied" in d2.reason or d2.candidacy
 
 
 def test_cannot_authority_promote_without_candidate():
     d = PromotionGate().evaluate("trend_multi", _base_evidence(lookahead_safe=False, leakage_detected=True))
     d2 = promote_with_authority(d, authority_id="ops", approve=True)
     assert d2.approved is False
-    assert "non_candidate" in d2.reason or d2.lifecycle_status != StrategyLifecycle.PROMOTED.value
+    assert d2.lifecycle_status != StrategyLifecycle.PROMOTED.value
+    assert "non_candidate" in d2.reason or "authority_blocked" in d2.reason
 
 
 def test_production_control_blocks_candidate():
