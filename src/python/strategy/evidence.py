@@ -17,6 +17,11 @@ class HardRejectCode(str, Enum):
     DATA_QUALITY_FAILURE = "DATA_QUALITY_FAILURE"
     ZERO_VARIANCE = "ZERO_VARIANCE"
     NEGATIVE_EXPECTANCY = "NEGATIVE_EXPECTANCY"
+    INVALID_FEATURES = "INVALID_FEATURES"
+    COST_MODEL_MISSING = "COST_MODEL_MISSING"
+    RISK_VIOLATION = "RISK_VIOLATION"
+    NON_REPRODUCIBLE = "NON_REPRODUCIBLE"
+    INSUFFICIENT_OOS = "INSUFFICIENT_OOS"
     NONE = "NONE"
 
 
@@ -40,12 +45,26 @@ class WindowMetrics:
 
 @dataclass
 class EvidencePackage:
-    """Compatible with PromotionGate.evaluate(strategy_id, evidence_dict)."""
+    """Compatible with PromotionGate.evaluate(strategy_id, evidence_dict).
+
+    Versioned identity for control-plane promotion:
+      strategy_id + strategy_version + evidence_id + dataset/feature hashes
+    """
     strategy_id: str
+    strategy_version: str = "0.0.0"
+    evidence_id: str = ""
+    dataset_hash: str = ""
+    feature_hash: str = ""
+    cost_model: str = "simulation_v2"
+    evaluation_date: str = ""
+    feature_ssot: bool = True
+    uses_feature_snapshot: bool = True
     signal_defined: bool = True
     timing: str = "signal_T_execute_open_Tplus1"
     lookahead_safe: bool = True
     data_quality_ok: bool = True
+    leakage_detected: bool = False
+    reproducible: bool = True
 
     # aggregate in-sample / full sample
     n_trades: int = 0
@@ -89,9 +108,21 @@ class EvidencePackage:
 
     def to_promotion_evidence(self) -> dict[str, Any]:
         """Shape expected by PromotionGate.evaluate."""
+        eid = self.evidence_id or f"EP-{self.strategy_id}-DRAFT"
         return {
             "strategy_id": self.strategy_id,
+            "strategy_version": self.strategy_version,
+            "evidence_id": eid,
+            "dataset_hash": self.dataset_hash,
+            "feature_hash": self.feature_hash,
+            "cost_model": self.cost_model,
+            "evaluation_date": self.evaluation_date,
+            "feature_ssot": self.feature_ssot,
+            "feature_snapshot_ok": self.uses_feature_snapshot,
+            "uses_feature_snapshot": self.uses_feature_snapshot,
             "signal_defined": self.signal_defined,
+            "leakage_detected": self.leakage_detected,
+            "reproducible": self.reproducible,
             "backtest": {
                 "closed_trades": self.n_trades,
                 "n_trades": self.n_trades,
