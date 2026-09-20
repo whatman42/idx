@@ -264,8 +264,9 @@ class WFAExecutor:
             "overfit_risk": overfit_risk,
             "n_positive_oos_windows": n_pos_windows,
             "n_oos_windows": len(oos_metrics_list),
-            "selection_split": "OOS",
+            "selection_split": "NONE",
             "selection_rule": "fixed_params_from_job_no_oos_tuning",
+            "evaluation_split": "TEST_OOS",
             "note": "parameters taken from job; never tuned on test/OOS",
         }
 
@@ -295,7 +296,7 @@ class WFAExecutor:
             number_of_trials=1 + len([s for s in stress if s["label"].startswith("sma_")]),
             number_of_candidates=1,
             selection_rule="fixed_params_from_job_no_oos_tuning",
-            selection_split="OOS",
+            selection_split="NONE",
         )
         if champion_snapshot is not None:
             result.integrity_checks["champion_snapshot_read"] = True
@@ -327,7 +328,6 @@ class WFAExecutor:
         return self.store.put(result)
 
 
-# Re-export first-class bridge (EvidencePackage + candidacy)
 from src.python.research.evidence_bridge import (  # noqa: E402
     experiment_result_to_evidence,
     experiment_result_to_evidence_package,
