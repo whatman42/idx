@@ -28,7 +28,12 @@ class TrainResult:
 
 def _make_estimator(family: ModelFamily):
     if family == ModelFamily.LGBM_BOOST:
-        import lightgbm as lgb
+        try:
+            import lightgbm as lgb
+        except ImportError as e:
+            raise ImportError(
+                "lightgbm is required for LGBM_BOOST; install via requirements.txt"
+            ) from e
 
         return lgb.LGBMClassifier(
             n_estimators=40,
@@ -97,7 +102,20 @@ def train_family(
     spec = FAMILY_SPECS[family]
     t0 = time.monotonic()
     Xtr, Xte, ytr, yte = _time_split(X, y)
-    est = _make_estimator(family)
+    try:
+        est = _make_estimator(family)
+    except ImportError as e:
+        return TrainResult(
+            family=family.value,
+            model_id=spec.model_id,
+            model_version=model_version or f"{spec.model_id}_unavailable",
+            metrics={"error": str(e)},
+            path="",
+            status="TRAIN_FAILED",
+            train_sec=0.0,
+            n_train=int(len(ytr)),
+            n_test=int(len(yte)),
+        )
     est.fit(Xtr, ytr)
     pred = est.predict(Xte)
     acc = float((pred == yte).mean()) if len(yte) else 0.0
