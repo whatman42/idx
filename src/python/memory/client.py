@@ -41,6 +41,15 @@ class ResearchMemory:
     _backend: str = "none"
     last_error: str = ""
 
+    @property
+    def is_remote(self) -> bool:
+        return (self._backend or "").startswith("turso_")
+
+    @property
+    def is_local(self) -> bool:
+        b = self._backend or ""
+        return b.startswith("sqlite") or b == "sqlite_fallback"
+
     def close(self) -> None:
         if self._conn is not None:
             try:
@@ -77,7 +86,13 @@ class ResearchMemory:
             if ver <= current:
                 continue
             for stmt in MIGRATIONS[ver]:
-                self._conn.execute(stmt)
+                try:
+                    self._conn.execute(stmt)
+                except Exception as e:
+                    msg = str(e).lower()
+                    if "duplicate column" in msg or "already exists" in msg:
+                        continue
+                    raise
             self._conn.execute(
                 "INSERT OR REPLACE INTO schema_version(version, applied_at) VALUES (?, ?)",
                 (ver, _now()),
@@ -118,6 +133,18 @@ class ResearchMemory:
             ),
         )
         self.append_experiment_event(eid, None, row.get("status") or "CREATED")
+        try:
+            art = row.get("artifact_reference")
+            dep = row.get("dependency_snapshot")
+            if art is not None or dep is not None:
+                dep_s = dep if isinstance(dep, str) else (json.dumps(dep) if dep is not None else None)
+                self._execute(
+                    "UPDATE experiments SET artifact_reference = COALESCE(?, artifact_reference), "
+                    "dependency_snapshot = COALESCE(?, dependency_snapshot) WHERE experiment_id = ?",
+                    (art, dep_s, eid),
+                )
+        except Exception:
+            pass
         return {"ok": True, "idempotent": False, "experiment_id": eid}
 
     def append_experiment_event(
@@ -245,11 +272,6 @@ def connect_turso(
     timeout_sec: float = 30.0,
     prefer_http: bool = False,
 ) -> ResearchMemory:
-    """Connect to Turso Cloud as research memory backend.
-
-    Uses libsql package if installed, else HTTP pipeline (httpx).
-    On failure returns MEMORY_UNAVAILABLE — never mutates ledger/champion.
-    """
     from src.python.memory.turso_conn import connect_turso_backend
 
     conn, backend, err = connect_turso_backend(
@@ -283,15 +305,6 @@ def get_research_memory(
     sqlite_path: Optional[str] = None,
     prefer_sqlite: bool = False,
 ) -> ResearchMemory:
-    """Factory: Turso if env set and reachable, else SQLite, else UNAVAILABLE.
-
-    Env:
-      TURSO_DATABASE_URL  (libsql://... or https://...)
-      TURSO_AUTH_TOKEN
-
-    prefer_sqlite=True forces local/test path (CI).
-    Token is never logged.
-    """
     if not prefer_sqlite:
         url = os.environ.get("TURSO_DATABASE_URL", "").strip()
         token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
@@ -302,12 +315,14 @@ def get_research_memory(
             if sqlite_path:
                 local = connect_sqlite(sqlite_path)
                 local.last_error = f"turso_fallback:{mem.last_error}"
+                local._backend = "sqlite_fallback"
                 if local.status == MemoryStatus.AVAILABLE:
                     local.status = MemoryStatus.DEGRADED
                 return local
             try:
                 local = connect_sqlite(":memory:")
                 local.last_error = f"turso_fallback:{mem.last_error}"
+                local._backend = "sqlite_fallback"
                 local.status = MemoryStatus.DEGRADED
                 return local
             except Exception:
