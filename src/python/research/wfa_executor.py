@@ -248,17 +248,25 @@ class WFAExecutor:
             stress.append({"label": label, "expectancy": m2["expectancy"], "n_trades": m2["n_trades"]})
         for dw in (-2, 2):
             m3 = _simulate_signals(close, open_, sma_window=max(5, sma_window + dw), cost=self.cost)
-            stress.append({"label": f"sma_{sma_window+dw}", "expectancy": m3["expectancy"], "n_trades": m3["n_trades"]})
+            stress.append({"label": f"sma_{sma_window + dw}", "expectancy": m3["expectancy"], "n_trades": m3["n_trades"]})
 
         base_exp = metrics["oos"]["expectancy"]
         stressed_ok = sum(1 for s in stress if s["expectancy"] > -0.05) >= 3
         if status == "COMPLETED":
             status = "ROBUST" if stressed_ok and base_exp > 0 else "FRAGILE"
 
+        n_pos_windows = sum(1 for m in oos_metrics_list if m.get("expectancy", 0) > 0)
+        single_window_edge = n_pos_windows <= 1 and len(oos_metrics_list) > 1
+        overfit_risk = (n_windows > 1 and not stressed_ok) or single_window_edge
         robustness = {
             "stress": stress,
             "stability": "ROBUST" if status == "ROBUST" else "FRAGILE",
-            "overfit_risk": n_windows > 1 and not stressed_ok,
+            "overfit_risk": overfit_risk,
+            "n_positive_oos_windows": n_pos_windows,
+            "n_oos_windows": len(oos_metrics_list),
+            "selection_split": "OOS",
+            "selection_rule": "fixed_params_from_job_no_oos_tuning",
+            "note": "parameters taken from job; never tuned on test/OOS",
         }
 
         result = ExperimentResult(
@@ -286,7 +294,7 @@ class WFAExecutor:
             status=status,
             number_of_trials=1 + len([s for s in stress if s["label"].startswith("sma_")]),
             number_of_candidates=1,
-            selection_rule="single_challenger_wfa",
+            selection_rule="fixed_params_from_job_no_oos_tuning",
             selection_split="OOS",
         )
         if champion_snapshot is not None:
@@ -319,34 +327,9 @@ class WFAExecutor:
         return self.store.put(result)
 
 
-def experiment_result_to_evidence(result: ExperimentResult) -> dict[str, Any]:
-    """Map ExperimentResult → evidence dict for PromotionGate (candidacy only)."""
-    oos = (result.metrics or {}).get("oos") or {}
-    return {
-        "strategy_id": (result.challenger_version or "").split("@")[0],
-        "strategy_version": result.challenger_version,
-        "baseline_id": result.baseline_version,
-        "evidence_id": f"EVD-{result.experiment_id}",
-        "cost_model": result.cost_model,
-        "cost_model_id": result.cost_model,
-        "fee_buy_bps": result.cost_model_detail.get("fee_bps", 15.0),
-        "fee_exit_bps": result.cost_model_detail.get("exit_fee_bps", 25.0),
-        "slippage_bps": result.cost_model_detail.get("slippage_bps", 5.0),
-        "dataset_hash": result.dataset_hash,
-        "feature_hash": result.feature_hash,
-        "commit_sha": result.commit_sha,
-        "seed": result.seed,
-        "n_trades": oos.get("n_trades", 0),
-        "expectancy": oos.get("expectancy", 0.0),
-        "profit_factor": oos.get("profit_factor", 0.0),
-        "max_drawdown": oos.get("max_drawdown", 0.0),
-        "win_rate": oos.get("win_rate", 0.0),
-        "oos_evaluated": True,
-        "walk_forward": True,
-        "status": result.status,
-        "robustness": result.robustness,
-        "leakage_ok": result.leakage_checks.get("pit_ok", False),
-        "result_hash": result.result_hash,
-        "auto_promote": False,
-        "approved": False,
-    }
+# Re-export first-class bridge (EvidencePackage + candidacy)
+from src.python.research.evidence_bridge import (  # noqa: E402
+    experiment_result_to_evidence,
+    experiment_result_to_evidence_package,
+    evaluate_research_candidacy,
+)
