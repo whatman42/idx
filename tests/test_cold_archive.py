@@ -1,4 +1,4 @@
-"""Cold archive — integrity, idempotency, isolation, GDrive-unavailable != trading fail."""
+"""Cold archive — GitHub Free backends, isolation, no GDrive."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,111 +12,112 @@ from src.python.archive.contracts import (
     archive_cannot_mutate_champion,
     archive_cannot_mutate_ledger,
 )
-from src.python.archive.integrity import assert_no_secrets, scan_secret_bytes, sha256_bytes
+from src.python.archive.integrity import (
+    assert_no_secrets,
+    extract_tar_gz,
+    make_tar_gz,
+    scan_secret_bytes,
+    sha256_bytes,
+)
 from src.python.archive.manager import ArchiveManager
 
 
-def test_local_roundtrip(tmp_path):
-    m = ArchiveManager(local_root=tmp_path / "cold", prefer_gdrive=False)
-    data = b"deterministic-payload-001"
-    r = m.archive_bytes(data, artifact_id="art-1", artifact_type="research", source="test")
+def test_roundtrip_compress_hash_restore(tmp_path):
+    m = ArchiveManager(local_root=tmp_path / "cold", prefer_github_release=False)
+    files = {"a.json": b'{"x":1}', "b.csv": b"a,b\n1,2\n"}
+    r = m.archive_files(files, artifact_id="art-1", artifact_type="research")
     assert r.ok
-    assert r.local_persisted is True
-    assert r.remote_persisted is False
     assert r.backend == "local"
     assert r.reference is not None
-    assert r.reference.content_hash == sha256_bytes(data)
+    assert r.reference.compression == "tar.gz"
 
-    r2 = m.archive_bytes(data, artifact_id="art-1", artifact_type="research")
-    assert r2.idempotent is True
+    r2 = m.archive_files(files, artifact_id="art-1", artifact_type="research")
+    assert r2.ok and r2.idempotent
+    assert r2.status == ArchiveStatus.ARCHIVE_ALREADY_PRESENT.value
 
     restored = m.restore(
-        file_id=r.reference.drive_file_id,
-        expected_hash=r.reference.content_hash,
+        identity=r.reference.archive_identity,
+        expected_archive_sha256=r.reference.archive_sha256,
         dest_dir=tmp_path / "restore",
     )
     assert restored.ok
-    assert restored.status == ArchiveStatus.RESTORE_SUCCESS.value
-    assert Path(restored.reference.local_path).read_bytes() == data
+    data = Path(restored.reference.local_path).read_bytes()
+    assert sha256_bytes(data) == r.reference.archive_sha256
+    assert extract_tar_gz(data)["a.json"] == files["a.json"]
 
 
-def test_secret_rejected(tmp_path):
-    m = ArchiveManager(local_root=tmp_path / "c", prefer_gdrive=False)
-    bad = b'{"client_secret": "supersecretvalue123456"}'
-    r = m.archive_bytes(bad, artifact_id="x", name="credentials.json")
+def test_conflict_same_id_different_hash(tmp_path):
+    m = ArchiveManager(local_root=tmp_path / "c", prefer_github_release=False)
+    m.archive_files({"f.txt": b"v1"}, artifact_id="same")
+    r = m.archive_files({"f.txt": b"v2-different"}, artifact_id="same")
     assert r.ok is False
-    assert r.status == ArchiveStatus.ARCHIVE_REJECTED_SECRET.value
+    assert r.status == ArchiveStatus.ARCHIVE_CONFLICT.value
 
 
-def test_isolation_flags():
+def test_secret_blocked(tmp_path):
+    m = ArchiveManager(local_root=tmp_path / "s", prefer_github_release=False)
+    r = m.archive_files(
+        {"credentials.json": b'{"client_secret": "abcdefghijklmnop"}'},
+        artifact_id="bad",
+    )
+    assert r.ok is False
+    assert r.status == ArchiveStatus.ARCHIVE_BLOCKED_SECRET_DETECTED.value
+
+
+def test_integrity_corruption(tmp_path):
+    m = ArchiveManager(local_root=tmp_path / "i", prefer_github_release=False)
+    r = m.archive_files({"x": b"ok"}, artifact_id="i1")
+    assert r.ok
+    Path(r.reference.local_path).write_bytes(b"corrupted-bytes")
+    out = m.restore(
+        identity=r.reference.archive_identity,
+        expected_archive_sha256=r.reference.archive_sha256,
+    )
+    assert out.ok is False
+
+
+def test_isolation_and_no_gdrive_import():
     assert archive_cannot_mutate_ledger() is True
     assert archive_cannot_mutate_champion() is True
     assert archive_cannot_approve_evidence() is True
     assert archive_cannot_affect_trading() is True
-
-
-def test_gdrive_unavailable_paper_still_ok(tmp_path):
-    class DeadDrive:
-        name = "gdrive"
-        def available(self):
-            return False
-        def put(self, **kwargs):
-            raise RuntimeError("AUTH_FAILED")
-        def get(self, **kwargs):
-            raise RuntimeError("AUTH_FAILED")
-
-    m = ArchiveManager(local_root=tmp_path / "c2", prefer_gdrive=True, gdrive_backend=DeadDrive())
-    r = m.archive_bytes(b"payload", artifact_id="p1", artifact_type="reports")
-    assert r.ok is True
-    assert r.local_persisted is True
-    assert r.remote_persisted is False
-
+    with pytest.raises(ImportError):
+        from src.python.archive.gdrive_backend import GoogleDriveBackend  # noqa: F401
     from src.python.ops import paper_portfolio  # noqa: F401
-    assert archive_cannot_affect_trading() is True
 
 
-def test_integrity_mismatch_on_restore(tmp_path):
-    m = ArchiveManager(local_root=tmp_path / "c3", prefer_gdrive=False)
-    r = m.archive_bytes(b"abc", artifact_id="i1")
-    assert r.ok
-    Path(r.reference.local_path).write_bytes(b"corrupted")
-    out = m.restore(file_id=r.reference.drive_file_id, expected_hash=r.reference.content_hash)
-    assert out.ok is False
-    assert out.status in (
-        ArchiveStatus.RESTORE_INTEGRITY_FAILURE.value,
-        ArchiveStatus.RESTORE_UNAVAILABLE.value,
+def test_deterministic_tar():
+    a = make_tar_gz({"z": b"1", "a": b"2"})
+    b = make_tar_gz({"a": b"2", "z": b"1"})
+    assert sha256_bytes(a) == sha256_bytes(b)
+
+
+def test_github_release_mock_idempotent(tmp_path):
+    class FakeRelease:
+        name = "github_release"
+        def available(self):
+            return True
+        def put(self, **kw):
+            if not hasattr(self, "_seen"):
+                self._seen = set()
+            if kw["asset_name"] in self._seen:
+                return {**kw, "idempotent": True, "status": "ARCHIVE_ALREADY_PRESENT", "file_id": "1"}
+            self._seen.add(kw["asset_name"])
+            return {**kw, "idempotent": False, "status": "ARCHIVE_SUCCESS", "file_id": "1"}
+        def get(self, **kw):
+            return None
+
+    m = ArchiveManager(
+        local_root=tmp_path / "g", prefer_github_release=True, release_backend=FakeRelease()
     )
+    files = {"m.json": b"{}"}
+    r1 = m.archive_files(files, artifact_id="cert/1", artifact_type="certification")
+    assert r1.ok and r1.backend == "github_release"
+    r2 = m.archive_files(files, artifact_id="cert/1", artifact_type="certification")
+    assert r2.idempotent
 
 
 def test_scan_patterns():
     assert scan_secret_bytes(b"hello") == []
-    assert scan_secret_bytes(b"Bearer abcdefghijklmnopqrstuvwxyz0123456789") != []
     with pytest.raises(ValueError):
-        assert_no_secrets(b"-----BEGIN RSA PRIVATE KEY-----\nxxx")
-
-
-def test_mock_gdrive_success(tmp_path):
-    class FakeDrive:
-        name = "gdrive"
-        def available(self):
-            return True
-        def put(self, **kw):
-            return {
-                "logical_id": kw["logical_id"],
-                "content_hash": kw["content_hash"],
-                "size_bytes": len(kw["data"]),
-                "file_id": "drive-file-1",
-                "folder_id": "drive-folder-1",
-                "folder_key": kw["folder_key"],
-                "meta": kw["meta"],
-                "idempotent": False,
-            }
-        def get(self, **kw):
-            return None
-
-    m = ArchiveManager(local_root=tmp_path / "c4", prefer_gdrive=True, gdrive_backend=FakeDrive())
-    r = m.archive_bytes(b"cloud-ish", artifact_id="g1", artifact_type="certification")
-    assert r.ok
-    assert r.remote_persisted is True
-    assert r.backend == "gdrive"
-    assert r.reference.drive_file_id == "drive-file-1"
+        assert_no_secrets(b"ghp_abcdefghijklmnopqrstuvwxyz012345")

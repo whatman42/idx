@@ -1,4 +1,7 @@
-"""Cold archive storage — Google Drive optional, never trading dependency."""
+"""Cold archive — GitHub Releases + Actions Artifacts + local staging.
+
+Never trading dependency. No GDrive / R2 / S3.
+"""
 from src.python.archive.contracts import (
     ArchiveReference,
     ArchiveResult,

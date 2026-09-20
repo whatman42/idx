@@ -1,0 +1,73 @@
+name: Cold Archive Certification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: cold-archive-certification
+  cancel-in-progress: false
+
+jobs:
+  cold-archive-cert:
+    if: >-
+      github.repository == 'whatman42/idx'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Guard
+        run: |
+          echo "repository=${{ github.repository }}"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then exit 1; fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Unit tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/test_cold_archive.py -q --tb=line
+
+      - name: Local certification
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          IDX_ARCHIVE_LOCAL_ROOT: ${{ runner.temp }}/idx_cold
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: python scripts/cold_archive_cert.py --mode local
+
+      - name: Upload Actions Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cold-archive-cert-${{ github.run_id }}
+          path: ${{ runner.temp }}/idx_cold_cert_out/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: GitHub Release certification
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          IDX_ARCHIVE_LOCAL_ROOT: ${{ runner.temp }}/idx_cold
+          RUNNER_TEMP: ${{ runner.temp }}
+        run: python scripts/cold_archive_cert.py --mode github_release
+
+      - name: Assert no GDrive references
+        run: |
+          if grep -RniE "GDRIVE_SERVICE_ACCOUNT|GoogleDriveBackend|gdrive_backend|googleapiclient" src scripts tests .github/workflows 2>/dev/null; then
+            echo "GDrive reference found"; exit 1
+          fi
+          echo "GDrive references: 0"
