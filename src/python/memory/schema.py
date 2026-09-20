@@ -1,7 +1,7 @@
 """Schema versioning for research memory (Turso/libSQL/SQLite)."""
 from __future__ import annotations
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -92,5 +92,9 @@ MIGRATIONS: dict[int, list[str]] = {
             created_at TEXT NOT NULL
         )
         """,
+    ],
+    2: [
+        "ALTER TABLE experiments ADD COLUMN artifact_reference TEXT",
+        "ALTER TABLE experiments ADD COLUMN dependency_snapshot TEXT",
     ],
 }
