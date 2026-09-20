@@ -6,98 +6,181 @@ Principles:
 
 Statuses flow:
   OBSERVED → HYPOTHESIS → EXPERIMENT → VALIDATED → CANDIDATE → PROMOTED
+
+This module is the single import surface:
+  from src.python.learning.contracts import SignalEpisode, AttributionReport, ...
+Enums live in contracts_enums; core episode types in contracts_types_a1/a2.
 """
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from enum import Enum
 from typing import Any, Optional
 
+# ---- Enums (canonical definitions also mirrored in contracts_enums) ----
+from src.python.learning.contracts_enums import (  # noqa: F401
+    CounterfactualAction,
+    DriftKind,
+    DriftState,
+    EpisodeLifecycle,
+    EpisodeOutcome,
+    FailureType,
+    LearningStatus,
+    RootCauseCandidate,
+)
 
-class LearningStatus(str, Enum):
-    OBSERVED = "OBSERVED"
-    HYPOTHESIS = "HYPOTHESIS"
-    EXPERIMENT = "EXPERIMENT"
-    VALIDATED = "VALIDATED"
-    CANDIDATE = "CANDIDATE"
-    PROMOTED = "PROMOTED"
-    REJECTED = "REJECTED"
-    RETIRED = "RETIRED"
-
-
-class EpisodeOutcome(str, Enum):
-    WIN = "WIN"
-    LOSS = "LOSS"
-    FLAT = "FLAT"
-    OPEN = "OPEN"
-    SKIPPED = "SKIPPED"
-
-
-class EpisodeLifecycle(str, Enum):
-    """Explicit lifecycle — missing exit must NOT silently become COMPLETED."""
-    OPEN = "OPEN"
-    COMPLETED = "COMPLETED"
-    ATTRIBUTED = "ATTRIBUTED"
-    INVALID = "INVALID"
-    BLOCKED = "BLOCKED"
+# ---- Core experience records ----
+from src.python.learning.contracts_types_a1 import SignalEpisode  # noqa: F401
+from src.python.learning.contracts_types_a2 import (  # noqa: F401
+    AttributionReport,
+    FailureRecord,
+)
 
 
-class RootCauseCandidate(str, Enum):
-    FALSE_BREAKOUT = "FALSE_BREAKOUT"
-    LATE_ENTRY = "LATE_ENTRY"
-    BAD_REGIME = "BAD_REGIME"
-    OVERSIZE = "OVERSIZE"
-    TIGHT_STOP = "TIGHT_STOP"
-    LOOSE_STOP = "LOOSE_STOP"
-    ENSEMBLE_DISAGREE = "ENSEMBLE_DISAGREE"
-    GOVERNOR_TOO_STRICT = "GOVERNOR_TOO_STRICT"
-    LIQUIDITY = "LIQUIDITY"
-    UNKNOWN = "UNKNOWN"
-    NONE = "NONE"
+@dataclass
+class Hypothesis:
+    hypothesis_id: str
+    statement: str
+    regimes: list[str] = field(default_factory=list)
+    strategies: list[str] = field(default_factory=list)
+    counter_hypothesis: str = ""
+    status: str = LearningStatus.HYPOTHESIS.value
+    evidence_count: int = 0
+    experiment_ids: list[str] = field(default_factory=list)
+    meta: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
-class DriftKind(str, Enum):
-    FEATURE = "FEATURE"
-    REGIME = "REGIME"
-    MODEL = "MODEL"
-    PERFORMANCE = "PERFORMANCE"
-    EXECUTION = "EXECUTION"
+@dataclass
+class CounterfactualScenario:
+    name: str
+    description: str
+    hypothetical_r: float
+    delta_r: float
+    category: str = "unknown"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
-class FailureType(str, Enum):
-    """Controlled vocabulary — deterministic classification only."""
-    STOP_LOSS = "STOP_LOSS"
-    TAKE_PROFIT_MISSED = "TAKE_PROFIT_MISSED"
-    LOW_EDGE = "LOW_EDGE"
-    REGIME_MISMATCH = "REGIME_MISMATCH"
-    TIMING_FAILURE = "TIMING_FAILURE"
-    VOLATILITY_SPIKE = "VOLATILITY_SPIKE"
-    FALSE_SIGNAL = "FALSE_SIGNAL"
-    EXECUTION_DEVIATION = "EXECUTION_DEVIATION"
-    DATA_ANOMALY = "DATA_ANOMALY"
-    ABNORMAL_LOSS = "ABNORMAL_LOSS"
-    UNKNOWN = "UNKNOWN"
-    NONE = "NONE"  # not a system failure
+@dataclass
+class CounterfactualReport:
+    episode_id: str
+    actual_r: float
+    scenarios: list[CounterfactualScenario] = field(default_factory=list)
+    dominant_category: str = "unknown"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "episode_id": self.episode_id,
+            "actual_r": self.actual_r,
+            "scenarios": [s.to_dict() for s in self.scenarios],
+            "dominant_category": self.dominant_category,
+        }
 
 
-class DriftState(str, Enum):
-    """Canonical drift states. OK/WARN map to NORMAL/WATCH for compat."""
-    NORMAL = "NORMAL"
-    WATCH = "WATCH"
-    DEGRADED = "DEGRADED"
-    BLOCKED = "BLOCKED"
-    # legacy aliases used by existing tests
-    OK = "OK"
-    WARN = "WARN"
+@dataclass
+class ExperimentSpec:
+    experiment_id: str
+    hypothesis_id: str
+    name: str
+    baseline_id: str = "rule_sma20@1.0"
+    challenger_strategy_id: str = ""
+    challenger_version: str = "0.0.0"
+    dataset_hash: str = ""
+    feature_hash: str = ""
+    cost_model: str = "simulation_v2"
+    parameters: dict[str, Any] = field(default_factory=dict)
+    status: str = LearningStatus.EXPERIMENT.value
+    metrics: dict[str, Any] = field(default_factory=dict)
+    notes: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
-class CounterfactualAction(str, Enum):
-    HOLD = "HOLD"
-    NO_TRADE = "NO_TRADE"
-    ALT_STRATEGY = "ALT_STRATEGY"
-    ENTRY_DELAY_1_BAR = "ENTRY_DELAY_1_BAR"
-    EXIT_EARLIER = "EXIT_EARLIER"
-    EXIT_LATER = "EXIT_LATER"
-    TIGHTER_SL = "TIGHTER_SL"
-    WIDER_SL = "WIDER_SL"
-    REGIME_BLOCK = "REGIME_BLOCK"
+@dataclass
+class MetaDecision:
+    """Meta-learner output — reliability/uncertainty, not a BUY probability."""
+    symbol: str
+    expected_edge: float = 0.0
+    uncertainty: float = 1.0
+    strategy_reliability: dict[str, float] = field(default_factory=dict)
+    regime_compatibility: float = 0.5
+    decision_quality: float = 0.0
+    recommended_action: str = "HOLD"
+    reasons: list[str] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class HealthReport:
+    data_health: str = "OK"
+    feature_health: str = "OK"
+    model_health: str = "OK"
+    strategy_health: str = "OK"
+    regime_health: str = "OK"
+    execution_health: str = "OK"
+    learning_health: str = "OK"
+    decision_confidence: str = "OK"
+    warnings: list[str] = field(default_factory=list)
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class DriftAlert:
+    kind: str
+    name: str
+    score: float
+    threshold: float
+    status: str
+    detail: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class IntegrityResult:
+    """Ledger vs Episode vs Attribution P&L reconciliation."""
+    ok: bool
+    ledger_pnl: float = 0.0
+    episode_pnl: float = 0.0
+    attribution_pnl: float = 0.0
+    delta_ledger_episode: float = 0.0
+    delta_episode_attribution: float = 0.0
+    issues: list[str] = field(default_factory=list)
+    learning_data_integrity: str = "PASS"  # PASS | FAIL
+    blocked: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+__all__ = [
+    "LearningStatus",
+    "EpisodeOutcome",
+    "EpisodeLifecycle",
+    "RootCauseCandidate",
+    "DriftKind",
+    "FailureType",
+    "DriftState",
+    "CounterfactualAction",
+    "SignalEpisode",
+    "AttributionReport",
+    "FailureRecord",
+    "Hypothesis",
+    "CounterfactualScenario",
+    "CounterfactualReport",
+    "ExperimentSpec",
+    "MetaDecision",
+    "HealthReport",
+    "DriftAlert",
+    "IntegrityResult",
+]
