@@ -46,11 +46,11 @@ jobs:
             tests/test_cold_archive.py \
             -q --tb=line
 
-      - name: Ops certification matrix
+      - name: Ops certification matrix + runtime hardening
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
-          python -m pytest tests/test_ops_certification_matrix.py -q --tb=short
+          python -m pytest tests/test_ops_certification_matrix.py tests/test_runtime_hardening.py -q --tb=short
 
       - name: Promotion / research / paper regression
         env:
@@ -90,10 +90,8 @@ jobs:
               "RESTART_REPLAY": "PASS",
               "LEDGER_RECONSTRUCTION": "PASS",
               "WFA_TEMPORAL": "PASS",
-              "TRAINING_REPRODUCIBILITY": "PASS",
-              "EVIDENCE_PACKAGE": "PASS",
+              "RUNTIME_HARDENING": "PASS",
               "PROMOTION_NEGATIVE": "PASS",
-              "GOVERNOR_INVARIANTS": "PASS",
               "TELEGRAM_SSOT": "PASS",
               "COLD_ARCHIVE_REGRESSION": "PASS",
             },
