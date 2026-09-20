@@ -1,6 +1,8 @@
-# IDX Signal-Only Bot — full universe scan + paper portfolio (Rp10M)
-# Schedule: Mon–Fri 09:30 UTC = 16:30 Asia/Jakarta
-# NO live trading
+# IDX Signal Bot — headless paper trading runtime (GitHub Actions)
+# Schedule: Mon–Fri 09:30 UTC (= 16:30 Asia/Jakarta EOD window)
+# Cron uses UTC. Weekend not scheduled (1-5). Holiday: in-process guard only.
+# NO live trading. NO broker. NO GUI.
+# Concurrency: cancel-in-progress=false — never cancel mid-fill (ledger safety).
 
 name: IDX Signal Bot
 
@@ -16,7 +18,7 @@ on:
         type: choice
         options: [TEST, PAPER, OPERATIONAL]
       force_schedule:
-        description: "Bypass Asia/Jakarta EOD window"
+        description: "Bypass Asia/Jakarta EOD window (TEST/manual only)"
         required: false
         default: true
         type: boolean
@@ -25,7 +27,7 @@ on:
         required: false
         default: "ALL"
       reset_portfolio:
-        description: "EXPLICIT reset paper portfolio to Rp10M (new session). Default false."
+        description: "EXPLICIT reset paper portfolio (new session). Default false."
         required: true
         default: false
         type: boolean
@@ -40,6 +42,7 @@ permissions:
 
 jobs:
   signal:
+    if: github.repository == 'whatman42/idx'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -52,6 +55,9 @@ jobs:
       PYTHONUNBUFFERED: "1"
       IDX_MAX_NOTIFY_SIGNALS: "20"
       IDX_MAX_PORTFOLIO_ENTRIES: "15"
+      IDX_WORKFLOW_RUN_ID: ${{ github.run_id }}
+      IDX_WORKFLOW_ATTEMPT: ${{ github.run_attempt }}
+      IDX_GIT_SHA: ${{ github.sha }}
 
     steps:
       - name: Checkout
@@ -71,7 +77,7 @@ jobs:
       - name: Prepare dirs
         run: mkdir -p data/ops state/ops artifacts/ops
 
-      - name: Resolve mode
+      - name: Resolve mode + cycle_id
         id: mode
         run: |
           MODE="${{ github.event.inputs.mode }}"
@@ -82,14 +88,24 @@ jobs:
           if [ -z "$RESET" ]; then RESET="false"; fi
           if [ "${{ github.event_name }}" = "schedule" ]; then RESET="false"; fi
           echo "reset=$RESET" >> "$GITHUB_OUTPUT"
+          TD=$(TZ=Asia/Jakarta date +%F)
+          echo "trading_date=$TD" >> "$GITHUB_OUTPUT"
+          CYCLE="IDX-${TD}-${MODE}-${{ github.run_id }}-a${{ github.run_attempt }}"
+          echo "cycle_id=$CYCLE" >> "$GITHUB_OUTPUT"
+          echo "IDX_CYCLE_ID=$CYCLE" >> "$GITHUB_ENV"
+          echo "IDX_TRADING_DATE=$TD" >> "$GITHUB_ENV"
+          echo "Resolved cycle_id=$CYCLE mode=$MODE trading_date=$TD"
 
-      - name: Fetch public OHLCV (full universe when ALL)
+      - name: Fetch public OHLCV (fail-closed on error)
         if: steps.mode.outputs.mode != 'TEST'
         run: |
-          python -m src.python.ops.fetch_ohlcv --symbols "${{ github.event.inputs.symbols || 'ALL' }}" --out data/ops/ohlcv.csv --period 3mo --batch-size 80
+          python -m src.python.ops.fetch_ohlcv \
+            --symbols "${{ github.event.inputs.symbols || 'ALL' }}" \
+            --out data/ops/ohlcv.csv --period 3mo --batch-size 80
         continue-on-error: false
 
-      - name: Run signal bot
+      - name: Run signal bot (paper only)
+        id: bot
         run: |
           FORCE="${{ github.event.inputs.force_schedule }}"
           if [ "${{ github.event_name }}" = "schedule" ]; then FORCE=false; fi
@@ -98,18 +114,44 @@ jobs:
           if [ "$FORCE" = "true" ]; then ARGS+=(--force-schedule); fi
           if [ "${{ steps.mode.outputs.reset }}" = "true" ]; then ARGS+=(--reset-portfolio); fi
           if [ -f "$IDX_CSV_PATH" ]; then ARGS+=(--csv "$IDX_CSV_PATH"); fi
+          set +e
           python -m src.python.ops.signal_bot "${ARGS[@]}"
+          RC=$?
+          set -e
+          echo "bot_exit=$RC" >> "$GITHUB_OUTPUT"
+          exit "$RC"
 
-      - name: Persist portfolio state to repository
+      - name: Persist portfolio state (financial SSOT)
         if: always() && (steps.mode.outputs.mode == 'OPERATIONAL' || steps.mode.outputs.mode == 'PAPER')
         run: |
           if [ -f state/ops/paper_portfolio.json ]; then
             git config user.name "idx-ops-bot"
             git config user.email "idx-ops-bot@users.noreply.github.com"
             git add state/ops/paper_portfolio.json state/ops/notify_state.json state/ops/sessions || true
-            git diff --staged --quiet || git commit -m "chore(ops): persist paper portfolio state [skip ci]"
+            git diff --staged --quiet || git commit -m "chore(ops): persist paper portfolio state cycle=${{ steps.mode.outputs.cycle_id }} [skip ci]"
             git push || echo "WARN: state push failed — artifact still uploaded"
           fi
+
+      - name: Secret hygiene guard (no token shapes in report)
+        if: always()
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from src.python.ops.runtime_cycle import secret_scan_text
+          hits = []
+          for p in Path("artifacts/ops").rglob("*"):
+              if p.is_file() and p.stat().st_size < 2_000_000:
+                  try:
+                      t = p.read_text(encoding="utf-8", errors="ignore")
+                  except Exception:
+                      continue
+                  h = secret_scan_text(t)
+                  if h:
+                      hits.append(f"{p}:{h}")
+          if hits:
+              raise SystemExit("SECRET_SCAN_FAIL: " + "; ".join(hits[:5]))
+          print("secret_scan=PASS")
+          PY
 
       - name: Upload operational report
         if: always()
@@ -120,3 +162,4 @@ jobs:
             artifacts/ops/
             state/ops/
           if-no-files-found: warn
+          retention-days: 30
