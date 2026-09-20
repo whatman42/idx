@@ -71,9 +71,12 @@ class ResearchCycle:
             }
 
         failures = self.learning.failures.list_observed()
+        # Rebuild regime matrix from SSOT episodes (idempotent; no double-count)
+        self.regime_matrix.rebuild(self.learning.episodes)
+        self.factory.regime_matrix = self.regime_matrix
         batch = self.factory.build_batch(
             failures=failures,
-            episodes=self.learning.episodes,
+            episodes=None,  # already reconciled into regime_matrix
         )
         colab_jobs = []
         if emit_colab_jobs and batch.experiment_ids:
