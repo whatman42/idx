@@ -1,0 +1,66 @@
+# Google Drive cold-archive certification — secrets only, main-only, no PR.
+name: GDrive Cold Storage Certification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gdrive-cold-cert-main
+  cancel-in-progress: false
+
+jobs:
+  gdrive-cold-cert:
+    if: >-
+      github.repository == 'whatman42/idx'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Guard context
+        run: |
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "event=${{ github.event_name }}"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "Refusing non-dispatch event"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install google-auth google-auth-httplib2 || true
+
+      - name: Credential presence (no values)
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$GDRIVE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "CREDENTIAL_PRESENT=false"
+            echo "REAL GDRIVE CLOUD = NOT EXECUTED"
+            exit 2
+          fi
+          echo "CREDENTIAL_PRESENT=true"
+
+      - name: Run local archive suite always
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/test_cold_archive.py -q --tb=line
+
+      - name: Run real GDrive certification script
+        env:
+          GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/gdrive_cold_cert.py
