@@ -58,6 +58,7 @@ class ColabResearchJob:
         return asdict(self)
 
     def configuration_fingerprint(self) -> str:
+        """Material inputs only — never timestamp, path, or UUID."""
         import hashlib, json
         payload = {
             "kind": self.kind,
@@ -67,13 +68,22 @@ class ColabResearchJob:
             "baseline_id": self.baseline_id,
             "dataset_hash": self.dataset_hash,
             "feature_hash": self.feature_hash,
+            "feature_version": self.feature_version,
+            "regime_version": self.regime_version,
             "cost_model": self.cost_model,
+            "cost_model_id": self.cost_model_id,
             "random_seed": self.random_seed,
             "parameters": self.parameters,
             "search_space": self.search_space,
             "commit_sha": self.commit_sha,
+            "train_start": self.train_start,
+            "train_end": self.train_end,
+            "validation_start": self.validation_start,
+            "validation_end": self.validation_end,
+            "test_start": self.test_start,
+            "test_end": self.test_end,
         }
-        raw = json.dumps(payload, sort_keys=True, default=str)
+        raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
         return hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
