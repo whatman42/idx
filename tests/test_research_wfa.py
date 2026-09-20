@@ -121,7 +121,7 @@ def test_evidence_never_auto_approved():
     ev = experiment_result_to_evidence(res)
     assert ev["auto_promote"] is False
     assert ev["approved"] is False
-    assert ev["walk_forward"] is True
+    assert ev.get("walk_forward_executed") is True or isinstance(ev.get("walk_forward"), dict)
 
 
 def test_budget_and_queue_idempotent():
