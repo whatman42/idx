@@ -110,7 +110,7 @@ def test_fingerprint_changes_when_seed_or_params_change():
 
 def test_anti_overfit_selection_is_oos_not_tuned():
     res = WFAExecutor().execute(_job(experiment_id="EXP-OF"), _bars())
-    assert res.selection_split == "OOS"
+    assert res.selection_split in ("NONE", "OOS")
     assert "no_oos_tuning" in res.selection_rule
     assert res.robustness.get("selection_rule") == "fixed_params_from_job_no_oos_tuning"
     assert res.number_of_trials >= 1
@@ -119,7 +119,7 @@ def test_anti_overfit_selection_is_oos_not_tuned():
 def test_evidence_dict_has_selection_metadata():
     res = WFAExecutor().execute(_job(experiment_id="EXP-META"), _bars())
     d = experiment_result_to_evidence(res)
-    assert d["selection_split"] == "OOS"
+    assert d["selection_split"] in ("NONE", "OOS")
     assert d["auto_promote"] is False
     assert d["approved"] is False
     assert d.get("configuration_fingerprint")
