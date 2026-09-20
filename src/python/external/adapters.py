@@ -45,15 +45,15 @@ def probe_colab_available() -> DependencyReport:
         return DependencyReport(
             kind=DependencyKind.COMPUTE.value,
             status=DependencyStatus.AVAILABLE.value,
-            required=True,
+            required=False,
             message="colab_runtime_detected",
         )
     return DependencyReport(
         kind=DependencyKind.COMPUTE.value,
         status=DependencyStatus.UNAVAILABLE.value,
-        required=True,
+        required=False,
         message="colab_runtime_not_detected",
-        meta={"fallback": "QUEUE_OR_BLOCK_NO_HEAVY_ON_ACTIONS"},
+        meta={"fallback": "QUEUE_OR_BLOCK_IF_REQUIRES_COLAB_NO_HEAVY_ON_ACTIONS"},
     )
 
 
@@ -69,7 +69,7 @@ def report_colab_job_outcome(
         return DependencyReport(
             kind=DependencyKind.COMPUTE.value,
             status=DependencyStatus.TIMEOUT.value,
-            required=True,
+            required=False,
             message=error or "colab_timeout",
             can_retry=True,
         )
@@ -77,20 +77,20 @@ def report_colab_job_outcome(
         return DependencyReport(
             kind=DependencyKind.COMPUTE.value,
             status=DependencyStatus.UNAVAILABLE.value,
-            required=True,
+            required=False,
             message=error or "colab_incomplete",
         )
     if not artifact_present or not result_hash:
         return DependencyReport(
             kind=DependencyKind.COMPUTE.value,
             status=DependencyStatus.ARTIFACT_MISSING.value,
-            required=True,
+            required=False,
             message="colab_output_missing_or_unhashed",
         )
     return DependencyReport(
         kind=DependencyKind.COMPUTE.value,
         status=DependencyStatus.AVAILABLE.value,
-        required=True,
+        required=False,
         message="colab_completed",
         meta={"result_hash_present": True},
     )
