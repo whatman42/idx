@@ -1,0 +1,48 @@
+# Full pytest regression gate — fails the workflow on any test failure.
+# Separate from operational IDX Signal Bot (paper-only EOD).
+
+name: Pytest
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: idx-pytest-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pytest collection sanity
+        run: |
+          python -m pytest --collect-only -q
+          python -c "import sklearn, joblib, typer; print('ml_deps_ok')"
+
+      - name: Run full pytest suite
+        run: |
+          python -m pytest -q --tb=short
+        env:
+          PYTHONUNBUFFERED: "1"
