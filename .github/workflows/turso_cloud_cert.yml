@@ -1,0 +1,43 @@
+# Real Turso cloud certification — uses repository secrets only.
+# Never echo TURSO_AUTH_TOKEN or full URLs with credentials.
+name: Turso Cloud Certification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  turso-cloud-cert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Secret presence (no values)
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+        run: |
+          if [ -z "$TURSO_DATABASE_URL" ] || [ -z "$TURSO_AUTH_TOKEN" ]; then
+            echo "CLOUD_CAN_RUN=false"
+            echo "Missing secrets TURSO_DATABASE_URL and/or TURSO_AUTH_TOKEN"
+            exit 2
+          fi
+          echo "CLOUD_CAN_RUN=true"
+          echo "TURSO_DATABASE_URL_present=true"
+          echo "TURSO_AUTH_TOKEN_present=true"
+
+      - name: Run cloud certification
+        env:
+          TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
+          TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
+          PYTHONPATH: ${{ github.workspace }}
+        run: python scripts/turso_cloud_cert.py
