@@ -13,11 +13,12 @@ from src.python.external.gate import (
 )
 from src.python.external.states import DependencyReport, ResearchJobDependencyState
 from src.python.memory.client import MemoryStatus, ResearchMemory, connect_sqlite
+from src.python.memory import queries as mq
 
 
 def test_turso_read_unavailable_not_no_match():
     m = ResearchMemory(status=MemoryStatus.UNAVAILABLE)
-    q = m.query_experiment("E-1")
+    q = mq.query_experiment(m, "E-1")
     assert q["status"] == "MEMORY_UNAVAILABLE"
     assert q["status"] != "NO_MATCH"
     assert q["persisted"] is False
@@ -25,14 +26,14 @@ def test_turso_read_unavailable_not_no_match():
 
 def test_turso_read_no_match_when_available(tmp_path):
     m = connect_sqlite(tmp_path / "r.db")
-    q = m.query_experiment("MISSING")
+    q = mq.query_experiment(m, "MISSING")
     assert q["status"] == "NO_MATCH"
     assert q["match"] is False
 
 
 def test_turso_write_failed_not_persisted():
     m = ResearchMemory(status=MemoryStatus.UNAVAILABLE)
-    w = m.write_experiment({"experiment_id": "X", "fingerprint": "Y"})
+    w = mq.write_experiment(m, {"experiment_id": "X", "fingerprint": "Y"})
     assert w["persisted"] is False
     assert w["status"] == "MEMORY_UNAVAILABLE"
 
@@ -40,8 +41,8 @@ def test_turso_write_failed_not_persisted():
 def test_turso_write_success_and_idempotent_retry(tmp_path):
     m = connect_sqlite(tmp_path / "w.db")
     row = {"experiment_id": "E1", "fingerprint": "fp1", "status": "COMPLETED", "result_hash": "rh"}
-    w1 = m.write_experiment(row)
-    w2 = m.write_experiment(row)
+    w1 = mq.write_experiment(m, row)
+    w2 = mq.write_experiment(m, row)
     assert w1["persisted"] is True
     assert w1["status"] == "MEMORY_WRITE_SUCCESS"
     assert w2["idempotent"] is True
@@ -50,7 +51,7 @@ def test_turso_write_success_and_idempotent_retry(tmp_path):
 
 def test_fingerprint_unavailable_not_no_match():
     m = ResearchMemory(status=MemoryStatus.UNAVAILABLE)
-    q = m.query_by_fingerprint("fp-x")
+    q = mq.query_by_fingerprint(m, "fp-x")
     assert q["status"] == "MEMORY_UNAVAILABLE"
 
 
