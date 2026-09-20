@@ -71,12 +71,11 @@ class ResearchCycle:
             }
 
         failures = self.learning.failures.list_observed()
-        # Rebuild regime matrix from SSOT episodes (idempotent; no double-count)
         self.regime_matrix.rebuild(self.learning.episodes)
         self.factory.regime_matrix = self.regime_matrix
         batch = self.factory.build_batch(
             failures=failures,
-            episodes=None,  # already reconciled into regime_matrix
+            episodes=None,
         )
         colab_jobs = []
         if emit_colab_jobs and batch.experiment_ids:
@@ -104,3 +103,38 @@ class ResearchCycle:
             "promotion_path": "EvidencePackage→PromotionGate→Authority",
             "principle": "AI may propose; only authority promotes Champion",
         }
+
+    def dependency_snapshot(
+        self,
+        *,
+        data_ok: bool = True,
+        data_rows: int = 0,
+        compute_completed: bool = False,
+        compute_hash: str = "",
+        memory_required: bool = False,
+    ) -> dict:
+        """Explicit external dependency state for this cycle (never false-success)."""
+        from src.python.external.adapters import (
+            probe_colab_available,
+            probe_market_data,
+            probe_memory,
+            report_colab_job_outcome,
+        )
+        from src.python.external.gate import evaluate_research_job_readiness
+        from src.python.external.states import ResearchJobDependencyState
+
+        state = ResearchJobDependencyState()
+        state.data = probe_market_data(rows=data_rows if data_ok else 0, invalid=not data_ok)
+        state.memory = probe_memory()
+        state.memory.required = memory_required
+        if compute_completed and compute_hash:
+            state.compute = report_colab_job_outcome(
+                completed=True, artifact_present=True, result_hash=compute_hash,
+            )
+        else:
+            state.compute = probe_colab_available()
+            if not compute_completed:
+                state.compute.status = "UNAVAILABLE"
+                state.compute.message = "compute_not_completed"
+        evaluate_research_job_readiness(state)
+        return state.to_dict()
