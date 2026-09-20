@@ -35,11 +35,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Data quality + feature guard + cold archive
+      - name: Architecture + data quality + feature guard + cold archive
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python -m pytest \
+            tests/test_architecture_boundaries.py \
             tests/test_data_quality.py \
             tests/test_feature_snapshot_label_guard.py \
             tests/test_cold_archive.py \
@@ -83,6 +84,7 @@ jobs:
             "live_execution": False,
             "broker_execution": False,
             "checks": {
+              "ARCHITECTURE": "PASS",
               "DATA_QUALITY": "PASS",
               "DAILY_E2E": "PASS",
               "RESTART_REPLAY": "PASS",
