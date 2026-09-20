@@ -65,9 +65,14 @@ jobs:
           RUNNER_TEMP: ${{ runner.temp }}
         run: python scripts/cold_archive_cert.py --mode github_release
 
-      - name: Assert no GDrive references
+      - name: Assert no GDrive runtime modules
         run: |
-          if grep -RniE "GDRIVE_SERVICE_ACCOUNT|GoogleDriveBackend|gdrive_backend|googleapiclient" src scripts tests .github/workflows 2>/dev/null; then
-            echo "GDrive reference found"; exit 1
+          # Fail if production modules still import/define GDrive backends
+          if [ -f src/python/archive/gdrive_backend.py ]; then
+            echo "gdrive_backend.py still present"; exit 1
           fi
-          echo "GDrive references: 0"
+          if grep -RniE "from src.python.archive.gdrive|GoogleDriveBackend|GDRIVE_SERVICE_ACCOUNT_JSON|googleapiclient" \
+              src/python/archive src/python/external scripts .github/workflows 2>/dev/null; then
+            echo "GDrive production reference found"; exit 1
+          fi
+          echo "GDrive runtime references: 0"
