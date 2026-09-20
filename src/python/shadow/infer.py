@@ -53,7 +53,18 @@ def train_and_signal(
         }
     cut = int(len(y) * 0.8)
     cut = max(min_train, min(len(y) - 5, cut))
-    est = _make_estimator(family)
+    try:
+        est = _make_estimator(family)
+    except ImportError as e:
+        return {
+            "model_id": spec.model_id,
+            "family": family.value,
+            "status": "TRAIN_FAILED",
+            "error": str(e),
+            "signals": pd.DataFrame(columns=["timestamp", "symbol", "side", "confidence"]),
+            "feature_set_version": FEATURE_SET_VERSION,
+        }
+
     est.fit(X[:cut], y[:cut])
     pred_oos = est.predict(X[cut:])
     acc = float((pred_oos == y[cut:]).mean()) if len(y[cut:]) else 0.0
