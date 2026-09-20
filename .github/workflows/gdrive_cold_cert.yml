@@ -43,24 +43,35 @@ jobs:
           pip install -r requirements.txt
           pip install google-auth google-auth-httplib2 || true
 
+      - name: Run local archive suite (always)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/test_cold_archive.py -q --tb=line
+
       - name: Credential presence (no values)
+        id: cred
         env:
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
         run: |
           if [ -z "$GDRIVE_SERVICE_ACCOUNT_JSON" ]; then
             echo "CREDENTIAL_PRESENT=false"
             echo "REAL GDRIVE CLOUD = NOT EXECUTED"
-            exit 2
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           echo "CREDENTIAL_PRESENT=true"
+          echo "present=true" >> "$GITHUB_OUTPUT"
 
-      - name: Run local archive suite always
-        env:
-          PYTHONPATH: ${{ github.workspace }}
-        run: python -m pytest tests/test_cold_archive.py -q --tb=line
-
-      - name: Run real GDrive certification script
+      - name: Run real GDrive certification
+        if: steps.cred.outputs.present == 'true'
         env:
           GDRIVE_SERVICE_ACCOUNT_JSON: ${{ secrets.GDRIVE_SERVICE_ACCOUNT_JSON }}
           PYTHONPATH: ${{ github.workspace }}
         run: python scripts/gdrive_cold_cert.py
+
+      - name: Report cloud status when skipped
+        if: steps.cred.outputs.present != 'true'
+        run: |
+          echo "LOCAL/MOCK = PASS (pytest above)"
+          echo "REAL GDRIVE CLOUD = NOT EXECUTED"
+          echo "GDRIVE COLD STORAGE CERTIFICATION = NOT CERTIFIED"
