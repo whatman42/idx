@@ -1,4 +1,4 @@
-"""Local filesystem cold archive backend (tests + offline fallback)."""
+"""Local filesystem cold archive backend (staging + offline)."""
 from __future__ import annotations
 
 import json
@@ -23,44 +23,66 @@ class LocalArchiveBackend:
                 self._index = {}
 
     def _save_index(self) -> None:
-        self._index_path.write_text(json.dumps(self._index, sort_keys=True, indent=2), encoding="utf-8")
+        self._index_path.write_text(
+            json.dumps(self._index, sort_keys=True, indent=2), encoding="utf-8"
+        )
+
+    def find_by_identity(self, identity: str) -> Optional[dict]:
+        return self._index.get(identity)
+
+    def find_by_artifact_id(self, artifact_id: str) -> list[dict]:
+        return [r for r in self._index.values() if r.get("artifact_id") == artifact_id]
 
     def put(
         self,
         *,
-        logical_id: str,
-        data: bytes,
-        content_hash: str,
+        identity: str,
+        artifact_id: str,
+        content_sha256: str,
+        archive_bytes: bytes,
+        archive_sha256: str,
         meta: dict,
         folder_key: str,
     ) -> dict:
-        if logical_id in self._index and self._index[logical_id].get("content_hash") == content_hash:
-            return {**self._index[logical_id], "idempotent": True}
+        existing = self._index.get(identity)
+        if existing and existing.get("archive_sha256") == archive_sha256:
+            return {**existing, "idempotent": True, "status": "ARCHIVE_ALREADY_PRESENT"}
+        for r in self.find_by_artifact_id(artifact_id):
+            if r.get("content_sha256") != content_sha256 and r.get("identity") != identity:
+                return {
+                    "status": "ARCHIVE_CONFLICT",
+                    "artifact_id": artifact_id,
+                    "existing_identity": r.get("identity"),
+                    "idempotent": False,
+                }
         dest_dir = self.root / folder_key
         dest_dir.mkdir(parents=True, exist_ok=True)
-        dest = dest_dir / f"{content_hash[:16]}_{logical_id.replace('/', '_')}.bin"
-        dest.write_bytes(data)
-        man = dest.with_suffix(".manifest.json")
+        dest = dest_dir / f"{archive_sha256[:16]}.tar.gz"
+        dest.write_bytes(archive_bytes)
+        (dest_dir / f"{archive_sha256[:16]}.tar.gz.sha256").write_text(
+            f"{archive_sha256}  {dest.name}\n", encoding="utf-8"
+        )
         record = {
-            "logical_id": logical_id,
-            "content_hash": content_hash,
-            "size_bytes": len(data),
+            "identity": identity,
+            "artifact_id": artifact_id,
+            "content_sha256": content_sha256,
+            "archive_sha256": archive_sha256,
+            "size_bytes": len(archive_bytes),
             "path": str(dest),
             "folder_key": folder_key,
             "meta": meta,
-            "file_id": f"local:{content_hash[:24]}",
-            "folder_id": f"local-folder:{folder_key}",
+            "file_id": f"local:{archive_sha256[:24]}",
             "idempotent": False,
+            "status": "ARCHIVE_SUCCESS",
         }
-        man.write_text(json.dumps(record, sort_keys=True, indent=2), encoding="utf-8")
-        self._index[logical_id] = record
+        self._index[identity] = record
         self._save_index()
         return record
 
-    def get(self, *, file_id: str = "", logical_id: str = "") -> Optional[tuple[bytes, dict]]:
+    def get(self, *, file_id: str = "", identity: str = "") -> Optional[tuple[bytes, dict]]:
         rec = None
-        if logical_id and logical_id in self._index:
-            rec = self._index[logical_id]
+        if identity and identity in self._index:
+            rec = self._index[identity]
         elif file_id:
             for r in self._index.values():
                 if r.get("file_id") == file_id:
@@ -69,7 +91,7 @@ class LocalArchiveBackend:
         if not rec:
             return None
         data = Path(rec["path"]).read_bytes()
-        if sha256_bytes(data) != rec["content_hash"]:
+        if sha256_bytes(data) != rec["archive_sha256"]:
             raise ValueError("ARCHIVE_INTEGRITY_FAILURE")
         return data, rec
 
