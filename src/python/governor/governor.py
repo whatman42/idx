@@ -156,8 +156,12 @@ class MLGovernor:
             if "score" in mem and mem.get("status"):
                 try:
                     ur = UtilityReport(mid, fam.value, str(mem.get("status")), float(mem.get("score", ur.score)), ur.components, ur.reasons)
-                except Exception:
-                    pass
+                except (TypeError, ValueError, KeyError) as e:
+                    ur = UtilityReport(
+                        mid, fam.value, ur.status,
+                        float(ur.score), ur.components,
+                        list(ur.reasons) + [f"memory_override_skipped:{type(e).__name__}"],
+                    )
             utilities[mid] = ur.to_dict()
             ranked.append((ur.score, mid, fam))
 
