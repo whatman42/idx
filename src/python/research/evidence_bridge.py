@@ -170,8 +170,52 @@ def evaluate_research_candidacy(
     *,
     gate: Optional[PromotionGate] = None,
 ) -> dict[str, Any]:
-    """Run PromotionGate on EvidencePackage. Never reaches PROMOTED without authority."""
+    """Run PromotionGate on validated EvidencePackage. Research path never approves.
+
+    Fail-closed: provenance / anti-overfit / tamper / integrity failures block candidacy.
+    """
+    from src.python.research.invariants import (
+        assert_research_cannot_promote,
+        check_anti_overfit_gate,
+        check_evidence_package,
+        check_no_oos_tuning,
+        check_result_provenance,
+        check_tamper,
+    )
+
+    blocked: list[str] = []
+    ok, reason = check_result_provenance(result)
+    if not ok:
+        blocked.append(reason)
+    ok, reason = check_no_oos_tuning(result)
+    if not ok:
+        blocked.append(reason)
+    ok, reason = check_anti_overfit_gate(result)
+    if not ok:
+        blocked.append(reason)
+    ok, reason = check_tamper(result)
+    if not ok:
+        blocked.append(reason)
+
     pkg = experiment_result_to_evidence_package(result)
+    ok, reason = check_evidence_package(pkg)
+    if not ok:
+        blocked.append(reason)
+
+    if blocked:
+        return {
+            "approved": False,
+            "candidacy": False,
+            "research_path": True,
+            "production_mutation": False,
+            "blocked": True,
+            "block_reasons": blocked,
+            "evidence_id": pkg.evidence_id,
+            "hard_rejects": list(pkg.hard_rejects),
+            "status": result.status,
+            "reason": "research_invariants_failed:" + ",".join(blocked[:5]),
+        }
+
     evidence = pkg.to_promotion_evidence()
     evidence["auto_promote"] = False
     g = gate or PromotionGate()
@@ -182,5 +226,7 @@ def evaluate_research_candidacy(
     out["production_mutation"] = False
     out["evidence_id"] = pkg.evidence_id
     out["hard_rejects"] = list(pkg.hard_rejects)
+    out["blocked"] = False
     out["evidence_package"] = pkg.to_dict() if hasattr(pkg, "to_dict") else evidence
+    assert_research_cannot_promote(out)
     return out
