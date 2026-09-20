@@ -2,33 +2,35 @@
 
 **EXTERNAL FAILURE ≠ DATA SUCCESS**
 
-External services may fail. Research must degrade **explicitly**. Required evidence must **fail closed**. Paper Ledger remains correct. Champion remains protected.
+## Required vs Optional (per-job)
 
-## Inventory
+| Dependency | Plane role | Required when |
+|------------|------------|---------------|
+| Market data | Research input | experiment needs OHLCV |
+| Colab | Heavy compute | `requires_colab=True` (WFA/ML) |
+| Turso | Research memory | `requires_memory=True` (rare) |
+| Drive | Artifact store | `requires_artifact=True` |
+| LLM | Reasoning | `requires_llm=True` |
+| Actions | Control plane | never required for correctness |
 
-| Dependency | Required/Optional | Failure State | Fallback | Continue Research? | Promote? | Affect Ledger? |
-|------------|-------------------|---------------|----------|--------------------|----------|----------------|
-| Turso/libSQL | Optional | UNAVAILABLE/AUTH/NETWORK | MEMORY_UNAVAILABLE / SQLite | Yes (without memory) | No | No |
-| SQLite local | Optional | CONFIG | MEMORY_UNAVAILABLE | Yes | No | No |
-| Google Colab | Required (heavy jobs) | TIMEOUT/INCOMPLETE/MISSING | QUEUE/BLOCK; no heavy WFA on Actions | No (for that job) | No | No |
-| Google Drive | Optional | AUTH/MISSING/CORRUPT | ARTIFACT_STORAGE_DEGRADED | Yes | No | No |
-| Gemini/LLM | Optional | UNAVAILABLE/TIMEOUT | LLM_UNAVAILABLE; no fabrication | Yes | No | No |
-| Market data | Required | STALE/INVALID/NETWORK | BLOCK research | No | No | No |
-| GitHub API publish | Optional | AUTH/NETWORK | record error | Yes | No | No |
-| GitHub Actions | Optional control plane | TIMEOUT | scheduler retry only | Yes (lightweight) | No | No |
+Lightweight deterministic research may run with Colab UNAVAILABLE.
 
-## Status codes
+## Memory read semantics
 
-AVAILABLE · DEGRADED · UNAVAILABLE · TIMEOUT · AUTH_ERROR · CONFIG_ERROR · NETWORK_ERROR · DATA_INVALID · DATA_STALE · ARTIFACT_MISSING · ARTIFACT_CORRUPT · INTEGRITY_ERROR
+| Result | Meaning |
+|--------|---------|
+| MATCH_FOUND | Row exists |
+| NO_MATCH | Memory available; no row |
+| MEMORY_UNAVAILABLE | Cannot trust absence |
 
-## Composite job
+**MEMORY_UNAVAILABLE ≠ NO_MATCH**
 
-SUCCESS only if all **required** dependencies are AVAILABLE.
-Optional degraded → DEGRADED (metadata explicit).
-Required fail → BLOCKED/FAILED → **no promotion candidacy**.
+## Memory write semantics
 
-## Authority chain (unchanged)
+MEMORY_WRITE_SUCCESS (persisted=True) · MEMORY_WRITE_FAILED · MEMORY_UNAVAILABLE
+
+## Authority chain
 
 EvidencePackage → PromotionGate → Authority → Champion
 
-Turso, Drive, Colab, Gemini **cannot approve**.
+Turso / Drive / Colab / LLM / Actions **cannot approve**.

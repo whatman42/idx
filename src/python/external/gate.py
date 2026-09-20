@@ -1,4 +1,8 @@
-"""Research readiness & fail-closed promotion on external dependency state."""
+"""Research readiness & fail-closed promotion on external dependency state.
+
+Required vs optional is per-experiment/job via DependencyReport.required,
+not a global plane rule. Colab is required only when the job says so.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -28,8 +32,14 @@ def evaluate_research_job_readiness(
     state: ResearchJobDependencyState,
 ) -> ResearchJobDependencyState:
     notes: list[str] = list(state.notes)
-    required_reports = [r for r in (state.data, state.compute, state.artifact, state.memory, state.llm) if r.required]
-    optional_reports = [r for r in (state.data, state.compute, state.artifact, state.memory, state.llm) if not r.required]
+    required_reports = [
+        r for r in (state.data, state.compute, state.artifact, state.memory, state.llm)
+        if r.required
+    ]
+    optional_reports = [
+        r for r in (state.data, state.compute, state.artifact, state.memory, state.llm)
+        if not r.required
+    ]
 
     blocked = False
     failed = False
@@ -49,7 +59,10 @@ def evaluate_research_job_readiness(
                 failed = True
 
     for r in optional_reports:
-        if r.status not in (DependencyStatus.AVAILABLE.value, DependencyStatus.UNKNOWN.value):
+        if r.status not in (
+            DependencyStatus.AVAILABLE.value,
+            DependencyStatus.UNKNOWN.value,
+        ):
             degraded = True
             notes.append(f"optional_{r.kind}_{r.status}")
 
@@ -91,3 +104,21 @@ def fail_closed_promotion_on_deps(
         "production_mutation": False,
         "dependency_state": state.to_dict(),
     }
+
+
+def apply_job_requirements(
+    state: ResearchJobDependencyState,
+    *,
+    requires_colab: bool = False,
+    requires_memory: bool = False,
+    requires_artifact: bool = False,
+    requires_llm: bool = False,
+    requires_data: bool = True,
+) -> ResearchJobDependencyState:
+    """Set required flags from experiment policy (per-job, not global)."""
+    state.data.required = requires_data
+    state.compute.required = requires_colab
+    state.memory.required = requires_memory
+    state.artifact.required = requires_artifact
+    state.llm.required = requires_llm
+    return state
