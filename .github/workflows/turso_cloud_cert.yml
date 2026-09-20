@@ -1,16 +1,51 @@
-# Real Turso cloud certification — uses repository secrets only.
-# Never echo TURSO_AUTH_TOKEN or full URLs with credentials.
+# Real Turso cloud certification — repository secrets only.
+#
+# Controls:
+# - workflow_dispatch only (no pull_request / push / schedule)
+# - main branch + this repository only
+# - secrets.TURSO_DATABASE_URL + secrets.TURSO_AUTH_TOKEN only
+# - no workflow inputs that can override credentials
+# - contents: read — no write/deploy permissions
+#
+# Never echo TURSO_AUTH_TOKEN or credential-bearing URLs.
 name: Turso Cloud Certification
 
 on:
   workflow_dispatch:
+    # No inputs: callers cannot inject alternate URL/token via dispatch payload.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: turso-cloud-cert-main
+  cancel-in-progress: false
 
 jobs:
   turso-cloud-cert:
+    # Refuse non-main refs and any fork/context other than this repo.
+    if: >-
+      github.repository == 'whatman42/idx'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+
     steps:
+      - name: Guard context
+        run: |
+          echo "repository=${{ github.repository }}"
+          echo "ref=${{ github.ref }}"
+          echo "event=${{ github.event_name }}"
+          echo "actor=${{ github.actor }}"
+          if [ "${{ github.event_name }}" != "workflow_dispatch" ]; then
+            echo "Refusing non-dispatch event"
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
+        with:
+          ref: main
+          # Pin to default branch tip; do not checkout untrusted PR heads.
 
       - uses: actions/setup-python@v5
         with:
@@ -34,9 +69,11 @@ jobs:
           echo "CLOUD_CAN_RUN=true"
           echo "TURSO_DATABASE_URL_present=true"
           echo "TURSO_AUTH_TOKEN_present=true"
+          # Do not print URL host/path; Actions already masks secret values as ***
 
       - name: Run cloud certification
         env:
+          # Credentials ONLY from repository secrets — not vars, not inputs, not env at org level override here.
           TURSO_DATABASE_URL: ${{ secrets.TURSO_DATABASE_URL }}
           TURSO_AUTH_TOKEN: ${{ secrets.TURSO_AUTH_TOKEN }}
           PYTHONPATH: ${{ github.workspace }}
