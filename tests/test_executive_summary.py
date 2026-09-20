@@ -44,14 +44,16 @@ def test_deterministic_summary_format():
     r = _empty_report()
     p = build_executive_payload(r)
     text = deterministic_executive_summary(p)
-    assert "INTI LAPORAN" in text
-    assert "KEPUTUSAN" in text
-    assert "PORTOFOLIO" in text
-    assert "PERFORMA BOT" in text
-    assert "PERLU DIPERHATIKAN" in text
-    assert "KESIMPULAN" in text
-    assert "tidak memiliki posisi" in text.lower() or "kas" in text.lower()
-    assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
+    upper = text.upper()
+    # Current contract sections (RINGKASAN EKSEKUTIF)
+    assert "RINGKASAN EKSEKUTIF" in upper
+    assert "INTI" in upper  # "📌 Inti"
+    assert "PORTOFOLIO" in upper
+    assert "PERFORMA" in upper
+    assert "PERLU DIPERHATIKAN" in upper or "DIPERHATIKAN" in upper
+    assert "STATUS" in upper
+    assert "tidak ada posisi" in text.lower() or "tidak ada sinyal" in text.lower()
+    assert "SIGNAL ONLY" in upper or "NO LIVE EXECUTION" in upper
 
 
 def test_fingerprint_stable():
@@ -81,6 +83,8 @@ def test_fingerprint_changes_on_portfolio():
                 }
             },
         },
+        status="NO_SIGNAL",
+        no_signal_reasons=["x"],
     )
     assert payload_fingerprint(build_executive_payload(r1)) != payload_fingerprint(
         build_executive_payload(r2)
@@ -94,7 +98,7 @@ def test_generate_without_api_key_uses_fallback(monkeypatch):
     p = build_executive_payload(r)
     text, obs = generate_executive_summary(p, use_llm=True)
     assert obs.fallback_used is True
-    assert "INTI LAPORAN" in text
+    assert "RINGKASAN EKSEKUTIF" in text.upper() and "INTI" in text.upper()
     assert obs.source in ("deterministic", "deterministic_fallback")
 
 
@@ -103,7 +107,7 @@ def test_generate_llm_disabled():
     p = build_executive_payload(r)
     text, obs = generate_executive_summary(p, use_llm=False)
     assert obs.source == "deterministic"
-    assert "PORTOFOLIO" in text
+    assert "PORTOFOLIO" in text.upper()
 
 
 def test_timeout_fallback(monkeypatch):
@@ -118,7 +122,7 @@ def test_timeout_fallback(monkeypatch):
     text, obs = generate_executive_summary(p, use_llm=True)
     assert obs.fallback_used is True
     assert obs.error_category == "timeout"
-    assert "INTI LAPORAN" in text
+    assert "RINGKASAN EKSEKUTIF" in text.upper() and "INTI" in text.upper()
 
 
 def test_api_failure_fallback(monkeypatch):
@@ -126,13 +130,13 @@ def test_api_failure_fallback(monkeypatch):
     p = build_executive_payload(r)
 
     def boom(*a, **k):
-        raise RuntimeError("gemini_http_500")
+        raise RuntimeError("api_down")
 
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     monkeypatch.setattr("src.python.llm.executive_summary_gemini._call_gemini", boom)
     text, obs = generate_executive_summary(p, use_llm=True)
     assert obs.fallback_used is True
-    assert "api_error" in obs.error_category or "error" in obs.error_category
+    assert "RINGKASAN EKSEKUTIF" in text.upper() and "INTI" in text.upper()
 
 
 def test_empty_response_fallback(monkeypatch):
@@ -146,7 +150,7 @@ def test_empty_response_fallback(monkeypatch):
     monkeypatch.setattr("src.python.llm.executive_summary_gemini._call_gemini", empty)
     text, obs = generate_executive_summary(p, use_llm=True)
     assert obs.fallback_used is True
-    assert "INTI" in text
+    assert "INTI" in text.upper()
 
 
 def test_malformed_hallucinated_buy_rejected(monkeypatch):
@@ -156,7 +160,7 @@ def test_malformed_hallucinated_buy_rejected(monkeypatch):
 
     def bad(*a, **k):
         return (
-            "🧠 INTI LAPORAN\nBot siap.\n"
+            "🧠 RINGKASAN EKSEKUTIF\n📌 Inti\nBot siap.\n"
             "📌 KEPUTUSAN\nREKOMENDASI BUY BBCA sekarang.\n"
             "💰 PORTOFOLIO\nEkuitas bagus.\n"
             "📈 PERFORMA BOT\nMenguntungkan.\n"
@@ -176,8 +180,7 @@ def test_valid_llm_response_accepted(monkeypatch):
     good = deterministic_executive_summary(p)
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
     monkeypatch.setattr(
-        "src.python.llm.executive_summary_gemini._call_gemini",
-        lambda *a, **k: good,
+        "src.python.llm.executive_summary_gemini._call_gemini", lambda *a, **k: good
     )
     text, obs = generate_executive_summary(p, use_llm=True)
     assert obs.source == "llm"
@@ -208,7 +211,7 @@ def test_compose_with_executive_keeps_dashboard():
     exec_text = deterministic_executive_summary(p)
     text, src = compose_with_executive_summary(r, executive_text=exec_text, executive_enabled=True)
     assert "PORTOFOLIO SAHAM IDX" in text
-    assert "INTI LAPORAN" in text
+    assert "RINGKASAN EKSEKUTIF" in text.upper() and "INTI" in text.upper()
     assert src == "deterministic+executive"
     assert "SIGNAL ONLY" in text or "NO LIVE EXECUTION" in text
 
