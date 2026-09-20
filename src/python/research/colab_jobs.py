@@ -1,7 +1,7 @@
 """Colab research job contracts — expensive compute stays off GitHub Actions.
 
-Jobs are pure specs + validators. Execution happens in Colab notebooks /
-src.python.colab.run_training. Never promotes Champion.
+Jobs are pure specs + validators. Execution happens in Colab / research.wfa_executor.
+Never promotes Champion.
 """
 from __future__ import annotations
 
@@ -26,10 +26,30 @@ class ColabResearchJob:
     experiment_id: str = ""
     hypothesis_id: str = ""
     strategy_id: str = ""
-    budget_sec: int = 1200
+    strategy_version: str = "0.0.0"
+    baseline_id: str = "rule_sma20@1.0"
+    repository: str = "whatman42/idx"
+    commit_sha: str = "UNKNOWN"
+    dataset_id: str = "UNKNOWN"
+    dataset_hash: str = "UNKNOWN"
+    feature_version: str = "UNKNOWN"
+    feature_hash: str = "UNKNOWN"
+    regime_version: str = "UNKNOWN"
+    cost_model: str = "simulation_v2"
+    cost_model_id: str = "simulation_v2"
+    random_seed: int = 42
+    train_start: str = ""
+    train_end: str = ""
+    validation_start: str = ""
+    validation_end: str = ""
+    test_start: str = ""
+    test_end: str = ""
+    execution_timestamp: str = ""
+    python_version: str = ""
+    dependency_fingerprint: str = "UNKNOWN"
     parameters: dict[str, Any] = field(default_factory=dict)
-    dataset_hash: str = ""
-    feature_hash: str = ""
+    search_space: dict[str, Any] = field(default_factory=dict)
+    budget_sec: int = 1200
     status: str = "PENDING"
     result_metrics: dict[str, Any] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
@@ -37,9 +57,27 @@ class ColabResearchJob:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    def configuration_fingerprint(self) -> str:
+        import hashlib, json
+        payload = {
+            "kind": self.kind,
+            "experiment_id": self.experiment_id,
+            "strategy_id": self.strategy_id,
+            "strategy_version": self.strategy_version,
+            "baseline_id": self.baseline_id,
+            "dataset_hash": self.dataset_hash,
+            "feature_hash": self.feature_hash,
+            "cost_model": self.cost_model,
+            "random_seed": self.random_seed,
+            "parameters": self.parameters,
+            "search_space": self.search_space,
+            "commit_sha": self.commit_sha,
+        }
+        raw = json.dumps(payload, sort_keys=True, default=str)
+        return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
 
 def validate_job(job: ColabResearchJob) -> list[str]:
-    """Fail-closed preflight for Colab jobs."""
     errs: list[str] = []
     if not job.job_id:
         errs.append("job_id_required")
@@ -62,8 +100,15 @@ def make_job(
     experiment_id: str = "",
     hypothesis_id: str = "",
     strategy_id: str = "",
+    strategy_version: str = "0.0.0",
+    baseline_id: str = "rule_sma20@1.0",
     budget_sec: int = 1200,
     parameters: Optional[dict[str, Any]] = None,
+    commit_sha: str = "UNKNOWN",
+    dataset_hash: str = "UNKNOWN",
+    feature_hash: str = "UNKNOWN",
+    cost_model: str = "simulation_v2",
+    random_seed: int = 42,
 ) -> ColabResearchJob:
     kind_s = kind.value if isinstance(kind, ResearchJobKind) else str(kind)
     params = dict(parameters or {})
@@ -73,8 +118,16 @@ def make_job(
         experiment_id=experiment_id,
         hypothesis_id=hypothesis_id,
         strategy_id=strategy_id,
+        strategy_version=strategy_version,
+        baseline_id=baseline_id,
         budget_sec=budget_sec,
         parameters=params,
+        commit_sha=commit_sha,
+        dataset_hash=dataset_hash,
+        feature_hash=feature_hash,
+        cost_model=cost_model,
+        cost_model_id=cost_model,
+        random_seed=random_seed,
         notes=["colab_only", "no_auto_promote", "evidence_required"],
     )
     errs = validate_job(job)
@@ -89,12 +142,12 @@ def jobs_from_experiment_ids(
     kind: ResearchJobKind = ResearchJobKind.WALK_FORWARD,
     budget_sec: int = 1200,
 ) -> list[ColabResearchJob]:
-    out: list[ColabResearchJob] = []
-    for eid in experiment_ids:
-        out.append(make_job(
+    return [
+        make_job(
             job_id=f"JOB-{eid}-{kind.value}",
             kind=kind,
             experiment_id=eid,
             budget_sec=budget_sec,
-        ))
-    return out
+        )
+        for eid in experiment_ids
+    ]
