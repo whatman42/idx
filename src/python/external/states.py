@@ -121,7 +121,7 @@ class ResearchJobDependencyState:
         kind=DependencyKind.MEMORY.value, status=DependencyStatus.UNKNOWN.value, required=False,
     ))
     compute: DependencyReport = field(default_factory=lambda: DependencyReport(
-        kind=DependencyKind.COMPUTE.value, status=DependencyStatus.UNKNOWN.value, required=True,
+        kind=DependencyKind.COMPUTE.value, status=DependencyStatus.UNKNOWN.value, required=False,
     ))
     artifact: DependencyReport = field(default_factory=lambda: DependencyReport(
         kind=DependencyKind.ARTIFACT.value, status=DependencyStatus.UNKNOWN.value, required=False,
