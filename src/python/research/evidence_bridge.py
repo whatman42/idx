@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from src.python.research.experiment_result import ExperimentResult
 from src.python.strategy.evidence import EvidencePackage, HardRejectCode, WindowMetrics
+from src.python.strategy.evidence_freeze import freeze_evidence_package
 from src.python.strategy.promotion_gate import PromotionGate, PromotionDecision
 
 
@@ -136,7 +137,7 @@ def experiment_result_to_evidence_package(result: ExperimentResult) -> EvidenceP
         hard_rejects=list(dict.fromkeys(hard)),
         notes=notes,
     )
-    return pkg
+    return freeze_evidence_package(pkg)
 
 
 def experiment_result_to_evidence(result: ExperimentResult) -> dict[str, Any]:
