@@ -97,13 +97,14 @@ def test_with_position_buy_signal():
 
 
 def test_integrity_failure_blocks_signal_language():
-    report = build_cycle_report(
+    report = CycleReport(
         trading_date="2026-09-15",
         mode="PAPER",
-        pf_summary=_empty_pf(),
         status="BLOCKED",
         integrity_ok=False,
         integrity_errors=["ledger_mismatch"],
+        live_execution=False,
+        signal_only=True,
     )
     text = compose_telegram_message(report)
     assert "DATA TIDAK VALID" in text or "BLOCKED" in text
