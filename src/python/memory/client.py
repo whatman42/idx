@@ -45,14 +45,19 @@ class ResearchMemory:
         if self._conn is not None:
             try:
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                self.last_error = f"close_{type(e).__name__}"
             self._conn = None
 
     def _execute(self, sql: str, params: tuple = ()) -> Any:
         assert self._conn is not None
         cur = self._conn.execute(sql, params)
-        self._conn.commit()
+        commit = getattr(self._conn, "commit", None)
+        if callable(commit):
+            try:
+                commit()
+            except Exception:
+                pass
         return cur
 
     def _query(self, sql: str, params: tuple = ()) -> list[Any]:
@@ -77,7 +82,12 @@ class ResearchMemory:
                 "INSERT OR REPLACE INTO schema_version(version, applied_at) VALUES (?, ?)",
                 (ver, _now()),
             )
-            self._conn.commit()
+            commit = getattr(self._conn, "commit", None)
+            if callable(commit):
+                try:
+                    commit()
+                except Exception:
+                    pass
             current = ver
 
     def upsert_experiment(self, row: dict[str, Any]) -> dict[str, Any]:
@@ -173,10 +183,21 @@ class ResearchMemory:
     def get_experiment(self, experiment_id: str) -> Optional[dict[str, Any]]:
         if self._conn is None:
             return None
-        rows = self._query("SELECT * FROM experiments WHERE experiment_id = ?", (experiment_id,))
+        cur = self._conn.execute(
+            "SELECT * FROM experiments WHERE experiment_id = ?", (experiment_id,),
+        )
+        rows = cur.fetchall() if hasattr(cur, "fetchall") else list(cur)
         if not rows:
             return None
-        cols = [d[0] for d in self._conn.execute("SELECT * FROM experiments LIMIT 0").description]
+        desc = getattr(cur, "description", None)
+        if desc:
+            cols = [d[0] for d in desc]
+        else:
+            cols = [
+                "experiment_id", "fingerprint", "hypothesis_id", "strategy_id", "commit_sha",
+                "dataset_hash", "feature_hash", "parameters_hash", "cost_model", "seed",
+                "status", "result_hash", "evidence_hash", "created_at",
+            ]
         return dict(zip(cols, rows[0]))
 
     def find_experiment_by_fingerprint(self, fingerprint: str) -> Optional[dict[str, Any]]:
@@ -201,7 +222,12 @@ class ResearchMemory:
         if not row:
             return {"ok": False, "reason": "not_found"}
         if row.get("result_hash") and row["result_hash"] != result_hash:
-            return {"ok": False, "reason": "MEMORY_DATA_INTEGRITY_FAIL", "memory_hash": row["result_hash"], "artifact_hash": result_hash}
+            return {
+                "ok": False,
+                "reason": "MEMORY_DATA_INTEGRITY_FAIL",
+                "memory_hash": row["result_hash"],
+                "artifact_hash": result_hash,
+            }
         return {"ok": True}
 
 
@@ -212,27 +238,80 @@ def connect_sqlite(path: str | Path) -> ResearchMemory:
     return mem
 
 
-def connect_turso(url: str, token: str) -> ResearchMemory:
+def connect_turso(
+    url: str,
+    token: str,
+    *,
+    timeout_sec: float = 30.0,
+    prefer_http: bool = False,
+) -> ResearchMemory:
+    """Connect to Turso Cloud as research memory backend.
+
+    Uses libsql package if installed, else HTTP pipeline (httpx).
+    On failure returns MEMORY_UNAVAILABLE — never mutates ledger/champion.
+    """
+    from src.python.memory.turso_conn import connect_turso_backend
+
+    conn, backend, err = connect_turso_backend(
+        url, token, timeout_sec=timeout_sec, prefer_http=prefer_http,
+    )
+    if conn is None:
+        return ResearchMemory(
+            status=MemoryStatus.UNAVAILABLE,
+            last_error=err or "TURSO_UNAVAILABLE",
+            _backend="none",
+        )
+    mem = ResearchMemory(
+        status=MemoryStatus.AVAILABLE,
+        _conn=conn,
+        _backend=f"turso_{backend}",
+    )
     try:
-        try:
-            import libsql_client  # type: ignore  # noqa: F401
-        except ImportError:
-            try:
-                from libsql import connect as libsql_connect  # type: ignore  # noqa: F401
-            except ImportError:
-                return ResearchMemory(status=MemoryStatus.UNAVAILABLE, last_error="libsql_driver_missing")
-        return ResearchMemory(status=MemoryStatus.DEGRADED, last_error="turso_driver_use_sqlite_fallback_in_tests")
+        mem.migrate()
     except Exception as e:
-        return ResearchMemory(status=MemoryStatus.UNAVAILABLE, last_error=type(e).__name__)
+        mem.close()
+        return ResearchMemory(
+            status=MemoryStatus.UNAVAILABLE,
+            last_error=f"migrate_{type(e).__name__}",
+            _backend="none",
+        )
+    return mem
 
 
-def get_research_memory(*, sqlite_path: Optional[str] = None) -> ResearchMemory:
-    url = os.environ.get("TURSO_DATABASE_URL", "").strip()
-    token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
-    if url and token:
-        mem = connect_turso(url, token)
-        if mem.status != MemoryStatus.UNAVAILABLE:
-            return mem
+def get_research_memory(
+    *,
+    sqlite_path: Optional[str] = None,
+    prefer_sqlite: bool = False,
+) -> ResearchMemory:
+    """Factory: Turso if env set and reachable, else SQLite, else UNAVAILABLE.
+
+    Env:
+      TURSO_DATABASE_URL  (libsql://... or https://...)
+      TURSO_AUTH_TOKEN
+
+    prefer_sqlite=True forces local/test path (CI).
+    Token is never logged.
+    """
+    if not prefer_sqlite:
+        url = os.environ.get("TURSO_DATABASE_URL", "").strip()
+        token = os.environ.get("TURSO_AUTH_TOKEN", "").strip()
+        if url and token:
+            mem = connect_turso(url, token)
+            if mem.status == MemoryStatus.AVAILABLE:
+                return mem
+            if sqlite_path:
+                local = connect_sqlite(sqlite_path)
+                local.last_error = f"turso_fallback:{mem.last_error}"
+                if local.status == MemoryStatus.AVAILABLE:
+                    local.status = MemoryStatus.DEGRADED
+                return local
+            try:
+                local = connect_sqlite(":memory:")
+                local.last_error = f"turso_fallback:{mem.last_error}"
+                local.status = MemoryStatus.DEGRADED
+                return local
+            except Exception:
+                return mem
     if sqlite_path:
         return connect_sqlite(sqlite_path)
     try:
