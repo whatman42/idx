@@ -66,7 +66,6 @@ class EvidencePackage:
     leakage_detected: bool = False
     reproducible: bool = True
 
-    # aggregate in-sample / full sample
     n_trades: int = 0
     total_return: float = 0.0
     cagr: Optional[float] = None
@@ -80,24 +79,20 @@ class EvidencePackage:
     transaction_cost: float = 0.0
     avg_exposure_pct: float = 0.0
 
-    # walk-forward
     wf_n_periods: int = 0
     wf_pass_rate: float = 0.0
     wf_windows: list[WindowMetrics] = field(default_factory=list)
-    stability_param_sensitivity: float = 1.0  # lower better; 1.0 = not evaluated
+    stability_param_sensitivity: float = 1.0
 
-    # OOS
     oos_evaluated: bool = False
     oos_expectancy: float = 0.0
     oos_n_trades: int = 0
     oos_max_drawdown: float = 0.0
-    train_to_oos_degradation: Optional[float] = None  # (train_exp - oos_exp) / max(|train|, eps)
+    train_to_oos_degradation: Optional[float] = None
 
-    # cost-adjusted (already net of fees in primary path; explicit flag)
     cost_evaluated: bool = True
     expectancy_after_cost: float = 0.0
 
-    # regime
     regime_evaluated: bool = False
     regimes_tested: list[str] = field(default_factory=list)
     regime_trade_share: dict[str, float] = field(default_factory=dict)
@@ -107,7 +102,6 @@ class EvidencePackage:
     notes: list[str] = field(default_factory=list)
 
     def to_promotion_evidence(self) -> dict[str, Any]:
-        """Shape expected by PromotionGate.evaluate."""
         eid = self.evidence_id or f"EP-{self.strategy_id}-DRAFT"
         return {
             "strategy_id": self.strategy_id,
@@ -138,7 +132,7 @@ class EvidencePackage:
             "walk_forward": {
                 "n_periods": self.wf_n_periods,
                 "pass_rate": self.wf_pass_rate,
-                "windows": [w.to_dict() for w in self.wf_windows],
+                "windows": [(w.to_dict() if hasattr(w, "to_dict") else dict(w)) for w in self.wf_windows],
             },
             "out_of_sample": {
                 "evaluated": self.oos_evaluated,
@@ -171,5 +165,5 @@ class EvidencePackage:
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
-        d["wf_windows"] = [w.to_dict() for w in self.wf_windows]
+        d["wf_windows"] = [(w.to_dict() if hasattr(w, "to_dict") else dict(w)) for w in self.wf_windows]
         return d
