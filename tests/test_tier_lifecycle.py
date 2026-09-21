@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from src.python.archive.integrity import make_tar_gz, sha256_bytes
 from src.python.archive.migration import MigrationStatus
+from src.python.archive.tier_plan import operational_archive_status, plan_tier1_promotions
 from src.python.archive.tiers import (
     DrivePool,
     StorageTier,
@@ -104,3 +105,30 @@ def test_github_tier1_never_auto_decommissioned(tmp_path):
             source_tier=StorageTier.GITHUB_TIER1.value,
         )
         assert r["deleted_source"] is False
+
+
+def test_plan_tier1_promotions_threshold_not_deletion(tmp_path):
+    pool = DrivePool()
+    pool.register("drive_01", tmp_path / "d1", capacity_limit_bytes=50_000_000, priority=1)
+    tier1 = [
+        {"archive_id": "old1", "size_bytes": 1000, "created_at": "2026-09-01T00:00:00Z"},
+        {"archive_id": "old2", "size_bytes": 1000, "created_at": "2026-09-02T00:00:00Z"},
+        {"archive_id": "new3", "size_bytes": 1000, "created_at": "2026-09-20T00:00:00Z"},
+    ]
+    plan = plan_tier1_promotions(tier1, pool=pool, max_tier1=2)
+    assert plan["threshold_exceeded"] is True
+    assert plan["overflow_count"] == 1
+    assert plan["promote_plan"][0]["archive_id"] == "old1"
+    assert plan["promote_plan"][0]["delete_tier1_after"] is False
+    assert plan["deleted_source"] is False
+    assert plan["rule"] == "threshold_triggers_promotion_not_deletion"
+
+
+def test_operational_status_declares_no_github_decommission(tmp_path):
+    pool = DrivePool()
+    pool.register("drive_01", tmp_path / "d1")
+    st = operational_archive_status(pool=pool)
+    assert st["github_decommission"] is False
+    assert st["github_tier1"] == "ACTIVE"
+    assert st["live_execution"] is False
+    assert "live_colab_multi_account" in st["ci_does_not_prove"]
