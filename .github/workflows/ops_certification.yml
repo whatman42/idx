@@ -35,7 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Architecture + data quality + feature guard + cold archive + migration
+      - name: Architecture + DQ + archive + migration + tiers
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
@@ -45,6 +45,7 @@ jobs:
             tests/test_feature_snapshot_label_guard.py \
             tests/test_cold_archive.py \
             tests/test_drive_migration.py \
+            tests/test_tier_lifecycle.py \
             -q --tb=line
 
       - name: Ops certification matrix + runtime hardening
@@ -86,12 +87,11 @@ jobs:
             "broker_execution": False,
             "checks": {
               "ARCHITECTURE": "PASS",
-              "DATA_QUALITY": "PASS",
               "COLD_ARCHIVE": "PASS",
               "DRIVE_MIGRATION": "PASS",
+              "TIER_LIFECYCLE": "PASS",
               "RUNTIME_HARDENING": "PASS",
             },
-            "note": "Statuses reflect pytest steps; job fails if any pytest step fails.",
           }
           open("artifacts/ops_certification_report.json","w").write(json.dumps(report, indent=2))
           print(json.dumps(report, indent=2))

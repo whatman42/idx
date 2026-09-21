@@ -1,33 +1,38 @@
-# Cold Archive Migration — GitHub → Colab → Google Drive
+# Tiered Cold Storage Lifecycle
 
-**Phase A (current):** dual retention — GitHub cold archive **kept**; Drive is additional verified copy.
+There is **no Phase B “decommission GitHub archive”**.
 
-**Phase B (later):** after coverage 100% verified, deprecate GitHub as primary cold store.
+```
+GitHub Cold Storage Tier 1
+        │  near capacity / retention policy
+        ▼
+Colab Migration Bridge (SHA-256 + manifest)
+        ▼
+Google Drive Tier 2 (drive_01)
+        │  near capacity
+        ▼
+Drive Account N (pool rotation)
+```
 
-## Boundaries
+## Rules
 
-| Plane | Role |
-|-------|------|
-| GitHub Actions + IDX Core | Paper trading runtime |
-| Ledger | Financial truth |
-| Google Drive | Cold archive **only** |
-| Colab | Migration bridge / maintenance worker |
+1. New archives enter **GitHub Tier 1**.
+2. GitHub keeps them while retention/capacity allows.
+3. Eligible oldest archives are **promoted** to Drive pool.
+4. Transfer + SHA-256 + manifest verification required.
+5. **Never delete** from current tier until a **verified copy** exists in another tier.
+6. Drive→Drive rotation follows the same rule.
+7. Failure → keep previous tier copy.
 
-Core **must not** import Google APIs. Failure of Drive/Colab **must not** stop paper trading.
+## FIFO meaning
 
-## Integrity
+FIFO = **promote oldest eligible to next tier**, not delete from the whole system.
 
-SOURCE → SHA-256 → upload → re-read → SHA-256 must match. Mismatch → KEEP source, no FIFO.
+## Modules
 
-## FIFO
-
-Only after verified migration. Protect MIN_RECOVERY_ARCHIVES.
-
-## Layout
-
-IDX/cold_archive/YYYY/MM/YYYY-MM-DD/{archives,manifests,metadata}/
-IDX/cold_archive/archive_index.json
-
-## Colab
-
-colab/cold_archive_migration.ipynb — mount Drive, stage tar.gz, run MigrationEngine.
+| Module | Role |
+|--------|------|
+| `archive/manager.py` + GitHub backend | Tier 1 write path |
+| `archive/drive_fs_backend.py` | Drive path layout |
+| `archive/migration.py` | Hash-verified put |
+| `archive/tiers.py` | Pool, promotion policy, lifecycle |
