@@ -1,1 +1,1 @@
-RESTORE_FROM_LOCAL
+see_artifacts_paper_portfolio_RESTORE
