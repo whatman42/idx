@@ -19,6 +19,8 @@ from src.python.notify.telegram import TelegramProvider
 from src.python.ops.notify_state import NotifyStateStore
 from src.python.ops.telegram_format import notification_id
 from src.python.ops.freshness import freshness_gate
+from src.python.ops.execution_authority import default_continuous_provider
+from src.python.market_structure import ExecutionGate, PriceRules
 from src.python.ops.paper_portfolio import (
     DEFAULT_INITIAL_CAPITAL, DEFAULT_LOT_SIZE, PaperPortfolioStore, apply_long_entry,
     mark_to_market, new_session, summary as portfolio_summary, paper_reset_scope,
@@ -463,6 +465,22 @@ def run(
             })
             continue
         entry_weight = float(gate.weight) if gate.weight > 0 else ENTRY_WEIGHT
+        # Market structure single authority (paper path included)
+        ms_prov = default_continuous_provider([sym])
+        # Optional: widen map from report metadata if present
+        ms_gate = ExecutionGate(
+            provider=ms_prov,
+            price_rules={
+                sym.upper(): PriceRules(
+                    symbol=sym.upper(),
+                    tick_size=float(s.get("tick_size") or 1.0),
+                    lot_size=int(s.get("lot_size") or DEFAULT_LOT_SIZE or 100),
+                    ara=float(s["ara"]) if s.get("ara") not in (None, "") else None,
+                    arb=float(s["arb"]) if s.get("arb") not in (None, "") else None,
+                )
+            },
+            require_price_rules=False,  # tick/ARA when metadata present; structure always enforced
+        )
         pf, trade, cls = apply_long_entry(
             pf, symbol=sym, price=px, weight=entry_weight, signal_id=sid, timestamp=ts,
             fee_bps=fee_bps, slippage_bps=slippage_bps, tp=float(s["tp"]), sl=float(s["sl"]),
@@ -470,6 +488,8 @@ def run(
             time_stop_bars=int(s.get("time_stop_bars") or hold_bars or 0),
             trailing_pct=float(s.get("trailing_pct") or 0.0),
             exit_method=str(s.get("exit_method") or "static_pct"),
+            market_gate=ms_gate,
+            enforce_market_gate=True,
         )
         if cls == "FULL_FILL":
             open_syms.add(sym)
