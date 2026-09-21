@@ -47,8 +47,7 @@ class WindowMetrics:
 class EvidencePackage:
     """Compatible with PromotionGate.evaluate(strategy_id, evidence_dict).
 
-    Versioned identity for control-plane promotion:
-      strategy_id + strategy_version + evidence_id + dataset/feature hashes
+    Research provenance fields are optional facts for reproducibility — never authority.
     """
     strategy_id: str
     strategy_version: str = "0.0.0"
@@ -100,6 +99,32 @@ class EvidencePackage:
 
     hard_rejects: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+    experiment_id: str = ""
+    experiment_version: str = ""
+    git_commit: str = ""
+    dataset_id: str = ""
+    dataset_version: str = ""
+    dataset_checksum: str = ""
+    feature_snapshot_version: str = ""
+    code_environment: str = ""
+    dependency_lock_hash: str = ""
+    random_seed: Optional[int] = None
+    experiment_timestamp: str = ""
+    timezone: str = "Asia/Jakarta"
+    train_period: str = ""
+    validation_period: str = ""
+    oos_period: str = ""
+    model_version: str = ""
+    transaction_cost_model: str = ""
+    slippage_model: str = ""
+    sample_count: int = 0
+    artifact_manifest: dict[str, Any] = field(default_factory=dict)
+    artifact_checksums: dict[str, str] = field(default_factory=dict)
+    reproducibility_status: str = "UNKNOWN"
+    data_quality_status: str = "UNKNOWN"
+    leakage_check_status: str = "UNKNOWN"
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_promotion_evidence(self) -> dict[str, Any]:
         eid = self.evidence_id or f"EP-{self.strategy_id}-DRAFT"
@@ -161,6 +186,12 @@ class EvidencePackage:
             "lookahead_safe": self.lookahead_safe,
             "data_quality_ok": self.data_quality_ok,
             "timing": self.timing,
+            "experiment_id": self.experiment_id,
+            "git_commit": self.git_commit,
+            "dataset_checksum": self.dataset_checksum or self.dataset_hash,
+            "reproducibility_status": self.reproducibility_status,
+            "data_quality_status": self.data_quality_status,
+            "leakage_check_status": self.leakage_check_status,
         }
 
     def to_dict(self) -> dict[str, Any]:
