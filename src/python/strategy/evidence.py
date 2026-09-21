@@ -47,7 +47,8 @@ class WindowMetrics:
 class EvidencePackage:
     """Compatible with PromotionGate.evaluate(strategy_id, evidence_dict).
 
-    Research provenance fields are optional facts for reproducibility — never authority.
+    evidence_origin must be set explicitly to CORE or COLAB (never inferred).
+    Research provenance fields are optional facts — never authority.
     """
     strategy_id: str
     strategy_version: str = "0.0.0"
@@ -99,6 +100,12 @@ class EvidencePackage:
 
     hard_rejects: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+
+    evidence_origin: str = ""  # CORE | COLAB only — mandatory for validation
+    parent_experiment_id: str = ""
+    boundary_attestation: str = ""
+    promotion_status: str = "PENDING"  # Colab leaves PENDING; Authority decides
+    authority_decision: str = ""  # empty unless Authority/PromotionGate path
 
     experiment_id: str = ""
     experiment_version: str = ""
@@ -186,9 +193,11 @@ class EvidencePackage:
             "lookahead_safe": self.lookahead_safe,
             "data_quality_ok": self.data_quality_ok,
             "timing": self.timing,
+            "evidence_origin": self.evidence_origin,
             "experiment_id": self.experiment_id,
             "git_commit": self.git_commit,
             "dataset_checksum": self.dataset_checksum or self.dataset_hash,
+            "promotion_status": self.promotion_status,
             "reproducibility_status": self.reproducibility_status,
             "data_quality_status": self.data_quality_status,
             "leakage_check_status": self.leakage_check_status,
