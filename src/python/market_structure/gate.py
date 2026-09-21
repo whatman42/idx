@@ -1,24 +1,38 @@
-"""Market Structure / FCA execution gate — last-line check before OrderIntent."""
+"""Final execution safety gate: structure + session + price/lot rules."""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Optional
+from typing import Callable, Mapping, Optional
 
-from src.python.market_structure.models import BlockReason, StructureGateResult
+from src.python.market_structure.models import (
+    BlockReason,
+    OrderRequest,
+    PriceRules,
+    StructureGateResult,
+)
 from src.python.market_structure.policy import evaluate_structure
+from src.python.market_structure.price_rules import validate_order
 from src.python.market_structure.provider import MarketStructureProvider
 
 
 @dataclass
 class ExecutionGate:
     provider: MarketStructureProvider
+    price_rules: Mapping[str, PriceRules] = field(default_factory=dict)
     max_age_seconds: float = 86_400.0
+    require_open_session: bool = True
+    require_price_rules: bool = True
     on_blocked: Optional[Callable[[StructureGateResult], None]] = None
     broker_calls: list[str] = field(default_factory=list)
 
     def check_symbol(self, symbol: str, *, now=None) -> StructureGateResult:
         snap = self.provider.get(symbol)
-        result = evaluate_structure(snap, max_age_seconds=self.max_age_seconds, now=now)
+        result = evaluate_structure(
+            snap,
+            max_age_seconds=self.max_age_seconds,
+            now=now,
+            require_open_session=self.require_open_session,
+        )
         if not result.allow and self.on_blocked:
             self.on_blocked(result)
         return result
@@ -26,14 +40,49 @@ class ExecutionGate:
     def allow_order_intent(self, symbol: str, *, now=None) -> StructureGateResult:
         return self.check_symbol(symbol, now=now)
 
+    def validate_order_request(self, order: OrderRequest, *, now=None) -> StructureGateResult:
+        base = self.check_symbol(order.symbol, now=now)
+        if not base.allow:
+            return base
+        rules = self.price_rules.get(order.symbol.upper()) or self.price_rules.get(order.symbol)
+        ok, reason, detail = validate_order(order, rules, require_rules=self.require_price_rules)
+        if not ok:
+            return StructureGateResult(
+                allow=False,
+                reason=reason,
+                symbol=base.symbol,
+                market_mode=base.market_mode,
+                detected_at=base.detected_at,
+                source=base.source,
+                detail=detail,
+                policy=base.policy,
+                session=base.session,
+                eligibility=base.eligibility,
+            )
+        return StructureGateResult(
+            allow=True,
+            reason=BlockReason.NONE,
+            symbol=base.symbol,
+            market_mode=base.market_mode,
+            detected_at=base.detected_at,
+            source=base.source,
+            detail="structure+price ok",
+            policy=base.policy,
+            session=base.session,
+            eligibility=base.eligibility,
+            normalized_price=order.price,
+            normalized_qty=order.quantity,
+        )
+
     def recheck_before_execution(
         self,
         symbol: str,
         *,
         prior: Optional[StructureGateResult] = None,
+        order: Optional[OrderRequest] = None,
         now=None,
     ) -> StructureGateResult:
-        current = self.check_symbol(symbol, now=now)
+        current = self.validate_order_request(order, now=now) if order is not None else self.check_symbol(symbol, now=now)
         if prior is not None and prior.allow and not current.allow:
             return StructureGateResult(
                 allow=False,
@@ -42,8 +91,10 @@ class ExecutionGate:
                 market_mode=current.market_mode,
                 detected_at=current.detected_at,
                 source=current.source,
-                detail=f"was {prior.market_mode} → now {current.market_mode}",
+                detail=f"was {prior.market_mode}/{prior.session} → now {current.market_mode}/{current.session}",
                 policy=current.policy,
+                session=current.session,
+                eligibility=current.eligibility,
             )
         return current
 
@@ -53,6 +104,5 @@ class ExecutionGate:
 
 
 def gemini_cannot_override(gate_result: StructureGateResult, gemini_says_ok: bool) -> StructureGateResult:
-    """LLM opinion never flips a BLOCK to PASS."""
     _ = gemini_says_ok
     return gate_result

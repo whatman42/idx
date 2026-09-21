@@ -1,44 +1,15 @@
-# Market Structure / FCA Gate (Policy A)
-
-FCA is a **market-structure constraint**, not a cosmetic screener flag.
+# Market Structure & Execution Safety Layer
 
 ```
-AUTHORITATIVE MARKET STATUS
-        ↓
-FCA / HALT / UNKNOWN DETECTION
-        ↓
-… Strategy → Risk → Governor …
-        ↓
-MARKET STRUCTURE EXECUTION GATE  (second check)
-        ↓
-OrderIntent (paper) | BLOCK
+Instrument State + Session State → Price Rules (tick/lot/ARA/ARB) → Order Validity → EXECUTION GATE
 ```
 
-## Enum (not bool)
+| Condition | Result |
+|-----------|--------|
+| CONTINUOUS + OPEN + TRADEABLE + fresh | may PASS |
+| FCA / HALTED / SUSPENDED / DELISTED | BLOCK |
+| UNKNOWN / stale | BLOCK |
+| PRE_OPEN / PRE_CLOSE / etc. | BLOCK |
+| price > ARA / < ARB / off-tick / bad lot | BLOCK |
 
-`CONTINUOUS | FCA | HALTED | SUSPENDED | UNKNOWN`
-
-`UNKNOWN ≠ CONTINUOUS` → **BLOCK** (fail-closed).
-
-## Policy A (baseline)
-
-| Mode | Order intent |
-|------|----------------|
-| CONTINUOUS (fresh) | may continue if other gates pass |
-| FCA | **BLOCK** (`FCA_INSTRUMENT`) |
-| HALTED / SUSPENDED | **BLOCK** |
-| UNKNOWN / stale / missing | **BLOCK** |
-
-No permanent FCA list hardcoded in strategy logic — use versioned metadata provider.
-
-## Forbidden
-
-- Detect FCA from price/volume alone as sole authority
-- Gemini/Telegram as operational truth
-- Broker send on blocked structure
-
-## Module
-
-`src/python/market_structure/` — models, provider, freshness, policy, gate
-
-LIVE_EXECUTION / BROKER_EXECUTION remain **FALSE**.
+Broker is not primary validator. Gemini cannot override. LIVE/BROKER = FALSE.

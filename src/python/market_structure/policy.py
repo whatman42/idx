@@ -1,15 +1,27 @@
-"""Policy A baseline: only CONTINUOUS may pass; FCA/HALTED/SUSPENDED/UNKNOWN → BLOCK."""
+"""Market structure + session + eligibility policy (Policy A baseline)."""
 from __future__ import annotations
 
 from src.python.market_structure.freshness import is_stale
 from src.python.market_structure.models import (
     BlockReason,
+    InstrumentEligibility,
     MarketStructure,
     MarketStructureSnapshot,
     StructureGateResult,
+    TradingSession,
 )
 
-POLICY_NAME = "FCA_BLOCK"
+POLICY_NAME = "MARKET_STRUCTURE_SAFETY"
+ALLOWED_SESSIONS = frozenset({TradingSession.OPEN})
+
+
+def _as_enum(val, enum_cls, default):
+    if isinstance(val, enum_cls):
+        return val
+    try:
+        return enum_cls(str(val).upper())
+    except Exception:
+        return default
 
 
 def evaluate_structure(
@@ -17,6 +29,7 @@ def evaluate_structure(
     *,
     max_age_seconds: float = 86_400.0,
     now=None,
+    require_open_session: bool = True,
 ) -> StructureGateResult:
     if snapshot is None:
         return StructureGateResult(
@@ -30,12 +43,9 @@ def evaluate_structure(
             policy=POLICY_NAME,
         )
 
-    mode = snapshot.structure
-    if isinstance(mode, str):
-        try:
-            mode = MarketStructure(mode)
-        except ValueError:
-            mode = MarketStructure.UNKNOWN
+    mode = _as_enum(snapshot.structure, MarketStructure, MarketStructure.UNKNOWN)
+    session = _as_enum(snapshot.session, TradingSession, TradingSession.UNKNOWN)
+    elig = _as_enum(snapshot.eligibility, InstrumentEligibility, InstrumentEligibility.UNKNOWN)
 
     base = dict(
         symbol=snapshot.symbol,
@@ -43,22 +53,50 @@ def evaluate_structure(
         detected_at=snapshot.as_of,
         source=snapshot.source,
         policy=POLICY_NAME,
+        session=session.value,
+        eligibility=elig.value,
     )
 
     if is_stale(snapshot, now=now, max_age_seconds=max_age_seconds):
         return StructureGateResult(allow=False, reason=BlockReason.MARKET_DATA_STALE, detail="stale metadata", **base)
 
-    if mode == MarketStructure.CONTINUOUS:
-        return StructureGateResult(allow=True, reason=BlockReason.NONE, detail="continuous ok", **base)
-    if mode == MarketStructure.FCA:
-        return StructureGateResult(allow=False, reason=BlockReason.FCA_INSTRUMENT, detail="Policy A FCA block", **base)
+    if elig == InstrumentEligibility.DELISTED:
+        return StructureGateResult(allow=False, reason=BlockReason.DELISTED, detail="delisted", **base)
+    if elig == InstrumentEligibility.SUSPENDED:
+        return StructureGateResult(allow=False, reason=BlockReason.SUSPENDED, detail="eligibility suspended", **base)
+    if elig == InstrumentEligibility.HALTED:
+        return StructureGateResult(allow=False, reason=BlockReason.TRADING_HALT, detail="eligibility halted", **base)
+    if elig == InstrumentEligibility.FCA:
+        return StructureGateResult(allow=False, reason=BlockReason.FCA_INSTRUMENT, detail="eligibility FCA", **base)
+    if elig == InstrumentEligibility.UNKNOWN:
+        return StructureGateResult(
+            allow=False, reason=BlockReason.MARKET_STATUS_UNAVAILABLE, detail="eligibility unknown", **base
+        )
+    if elig not in (InstrumentEligibility.TRADEABLE, InstrumentEligibility.ACTIVE, InstrumentEligibility.LISTED):
+        return StructureGateResult(allow=False, reason=BlockReason.NOT_TRADEABLE, detail=f"elig={elig.value}", **base)
+
     if mode == MarketStructure.HALTED:
-        return StructureGateResult(allow=False, reason=BlockReason.HALTED, detail="halted", **base)
+        return StructureGateResult(allow=False, reason=BlockReason.TRADING_HALT, detail="halted", **base)
     if mode == MarketStructure.SUSPENDED:
         return StructureGateResult(allow=False, reason=BlockReason.SUSPENDED, detail="suspended", **base)
-    return StructureGateResult(
-        allow=False,
-        reason=BlockReason.MARKET_STRUCTURE_UNKNOWN,
-        detail="UNKNOWN is not CONTINUOUS",
-        **base,
-    )
+    if mode == MarketStructure.FCA:
+        return StructureGateResult(allow=False, reason=BlockReason.FCA_INSTRUMENT, detail="Policy A FCA block", **base)
+    if mode == MarketStructure.UNKNOWN:
+        return StructureGateResult(
+            allow=False, reason=BlockReason.MARKET_STRUCTURE_UNKNOWN, detail="UNKNOWN≠CONTINUOUS", **base
+        )
+    if mode != MarketStructure.CONTINUOUS:
+        return StructureGateResult(allow=False, reason=BlockReason.POLICY_BLOCK, detail=mode.value, **base)
+
+    if require_open_session:
+        if session == TradingSession.UNKNOWN:
+            return StructureGateResult(allow=False, reason=BlockReason.SESSION_UNKNOWN, detail="session unknown", **base)
+        if session not in ALLOWED_SESSIONS:
+            return StructureGateResult(
+                allow=False,
+                reason=BlockReason.SESSION_NOT_CONTINUOUS,
+                detail=f"session={session.value} not OPEN",
+                **base,
+            )
+
+    return StructureGateResult(allow=True, reason=BlockReason.NONE, detail="structure+session ok", **base)
