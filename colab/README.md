@@ -1,53 +1,36 @@
-# IDX Colab adapter
+# Colab plane (research & maintenance only)
 
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/whatman42/idx/blob/main/colab/IDX_GPU_TRAINING.ipynb)
+**Not a trading runtime.** Operational signals/paper/ledger run on GitHub Actions + IDX Core.
 
-## Roles
+## Notebooks
 
-| Surface | Role |
-|---------|------|
-| **GitHub Actions** | Daily operational signals (`rule_sma20` (legacy ops_sma_v0)), paper portfolio |
-| **Google Colab** | Heavy / weekend ML **candidate** training & research |
-| **Telegram** | Output only |
-| **Paper portfolio** | Measurement only (not live trading) |
+| Notebook | Function |
+|----------|----------|
+| `IDX_GPU_TRAINING.ipynb` | Research compute — candidate ML training (Governor-gated; no auto-promote) |
+| `cold_archive_migration.ipynb` | Archive plane — GitHub Tier 1 → Drive pool (SHA-256, recovery) |
 
-## Safety
+## Scripts (run from Colab)
 
-- **No auto-promotion** — Colab never writes the production pointer
-- **GPU optional** — full CPU fallback
-- **Budget** — `COLAB_TRAINING_BUDGET_SEC` (default **1200**)
-- **Economic edge** — remains **UNVERIFIED** until valid forward/OOS evidence
-- Paper reset ≠ model/Governor/shadow reset
-
-## How to run
-
-1. Open the badge above (or File → Upload notebook from this folder).
-2. Runtime → optional GPU (T4 etc.); CPU is fine.
-3. Run all cells top to bottom.
-4. Artifacts:
-   - `models/candidates/*.joblib` + `*.meta.json`
-   - `artifacts/training/last_training_report.json`
-   - `artifacts/training/shadow_report.json` (if shadow ran)
-
-## Secrets (optional)
-
-| Secret | Required? |
-|--------|-----------|
-| `GH_PAT` | Optional — publish reports to GitHub |
-| Telegram / Gemini keys | **Not** required for training |
-
-Never put tokens in notebook source.
+```bash
+# After: drive.mount + git clone whatman42/idx
+python /content/idx/scripts/ops_real_drive_integration_test.py \
+  --drive-root /content/drive/MyDrive
+```
 
 ## Architecture
 
-The notebook is a **thin adapter**. All ML/feature/Governor/shadow logic lives under `src/python/`.
+See [docs/COLAB_RESEARCH_PLANE.md](../docs/COLAB_RESEARCH_PLANE.md).
 
-```text
-Colab notebook
-    → src.python.colab.hardware
-    → src.python.colab.run_training
-         → Governor.select_models
-         → ml.pipeline / features / validation
-         → shadow.compare (isolated)
-    → optional publish_candidates (GH_PAT)
 ```
+Research Compute | Data Laboratory | Strategy Evaluation | Archive & Recovery
+        ↓
+  EvidencePackage / operator reports
+        ↓
+  PromotionGate / Authority   (never auto-promote from Colab)
+```
+
+## Invariants
+
+- `LIVE_EXECUTION = FALSE`
+- `BROKER_EXECUTION = FALSE`
+- Colab does **not** write the paper Ledger or production signals.
