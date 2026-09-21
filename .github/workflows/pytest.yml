@@ -39,7 +39,7 @@ jobs:
       - name: Pytest collection sanity
         run: |
           python -m pytest --collect-only -q
-          python -c "import sklearn, joblib, typer; print('ml_deps_ok')"
+          python -c "import sklearn, joblib, typer, pandas, numpy, polars, lightgbm, httpx, pyarrow; print('core_deps_ok')"
 
       - name: Run full pytest suite
         run: |
