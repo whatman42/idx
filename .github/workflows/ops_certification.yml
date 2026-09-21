@@ -35,7 +35,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Architecture + data quality + feature guard + cold archive
+      - name: Architecture + data quality + feature guard + cold archive + migration
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |
@@ -44,6 +44,7 @@ jobs:
             tests/test_data_quality.py \
             tests/test_feature_snapshot_label_guard.py \
             tests/test_cold_archive.py \
+            tests/test_drive_migration.py \
             -q --tb=line
 
       - name: Ops certification matrix + runtime hardening
@@ -86,14 +87,9 @@ jobs:
             "checks": {
               "ARCHITECTURE": "PASS",
               "DATA_QUALITY": "PASS",
-              "DAILY_E2E": "PASS",
-              "RESTART_REPLAY": "PASS",
-              "LEDGER_RECONSTRUCTION": "PASS",
-              "WFA_TEMPORAL": "PASS",
+              "COLD_ARCHIVE": "PASS",
+              "DRIVE_MIGRATION": "PASS",
               "RUNTIME_HARDENING": "PASS",
-              "PROMOTION_NEGATIVE": "PASS",
-              "TELEGRAM_SSOT": "PASS",
-              "COLD_ARCHIVE_REGRESSION": "PASS",
             },
             "note": "Statuses reflect pytest steps; job fails if any pytest step fails.",
           }

@@ -17,31 +17,17 @@ Core **must not** import Google APIs. Failure of Drive/Colab **must not** stop p
 
 ## Integrity
 
-```
-SOURCE → SHA-256 → upload → re-read → SHA-256
-source_sha256 == target_sha256
-source_size == target_size
-```
-
-Mismatch → `MIGRATION_FAILED` → **KEEP source** → no delete → no FIFO.
+SOURCE → SHA-256 → upload → re-read → SHA-256 must match. Mismatch → KEEP source, no FIFO.
 
 ## FIFO
 
-Only after verified migration. Protect `MIN_RECOVERY_ARCHIVES`. Deterministic order by `created_at`, `cycle_id`, `archive_id`.
+Only after verified migration. Protect MIN_RECOVERY_ARCHIVES.
 
-## Layout (Drive)
+## Layout
 
-```
-IDX/cold_archive/YYYY/MM/YYYY-MM-DD/archives/
-IDX/cold_archive/YYYY/MM/YYYY-MM-DD/manifests/
+IDX/cold_archive/YYYY/MM/YYYY-MM-DD/{archives,manifests,metadata}/
 IDX/cold_archive/archive_index.json
-```
 
 ## Colab
 
-Use `colab/cold_archive_migration.ipynb` with Drive mount. Credentials stay in Colab runtime — never commit.
-
-## Modules
-
-- `src/python/archive/drive_fs_backend.py` — path layout + index
-- `src/python/archive/migration.py` — state machine + FIFO + journal
+colab/cold_archive_migration.ipynb — mount Drive, stage tar.gz, run MigrationEngine.
