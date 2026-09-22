@@ -102,7 +102,7 @@ def test_core_does_not_depend_on_drive_and_survives_failure(tmp_path):
         state, symbol="AAA", price=100.0, weight=0.05,
         signal_id="mig_iso", timestamp="2026-09-21T02:00:00+00:00",
     )
-    assert status == "FULL_FILL"
+    assert status == "PAPER_FILLED"
     drive = DriveFsBackend(tmp_path / "d")
     eng = MigrationEngine(drive=drive, journal_path=tmp_path / "j.json")
     drive.available = lambda: False  # type: ignore
