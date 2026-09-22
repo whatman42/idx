@@ -425,7 +425,7 @@ def apply_long_entry(
         "sl": float(sl),
         "timestamp": timestamp,
         "status": "FILLED",
-        "classification": "FULL_FILL",
+        "classification": "PAPER_FILLED",
         "scale_in": bool(existing is not None),
         "position_qty_after": float(pos.qty),
         "position_avg_entry_after": float(pos.avg_entry),
@@ -434,11 +434,11 @@ def apply_long_entry(
     state.trades = (state.trades + [trade])[-2000:]
     state.signal_ledger = (
         state.signal_ledger
-        + [{"signal_id": signal_id, "symbol": symbol, "side": "BUY", "status": "FULL_FILL", "timestamp": timestamp}]
+        + [{"signal_id": signal_id, "symbol": symbol, "side": "BUY", "status": "PAPER_FILLED", "timestamp": timestamp}]
     )[-2000:]
     state.last_event = f"BUY {symbol} qty={qty} lots={qty / lot_size:.0f} tp={tp} sl={sl}"
     _update_equity_snapshot(state, {symbol: exec_px}, timestamp)
-    return state, trade, "FULL_FILL"
+    return state, trade, "PAPER_FILLED"
 
 
 def apply_exit(
