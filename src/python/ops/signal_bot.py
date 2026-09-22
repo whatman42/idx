@@ -356,7 +356,7 @@ def run(
     report["signals_generated"] = int(len(long_sig))
     report["model"] = model_version
     report["production_strategy"] = "rule_sma20"
-    report["governor_action"] = "ALLOW_PAPER_SIGNAL"
+    report["governor_action"] = "PAPER_EXECUTION_ALLOWED"
     report["timing"] = "signal_T_execute_open_Tplus1"
     paper_signals = all_sig.copy() if not getattr(all_sig, "empty", True) else pd.DataFrame(columns=["timestamp", "symbol", "side"])
     if not paper_signals.empty and "side" in paper_signals.columns:
@@ -406,7 +406,7 @@ def run(
             "time_stop_bars": emeta.get("time_stop_bars", hold_bars),
             "trailing_pct": emeta.get("trailing_pct", 0.0),
             "sl_pct": emeta.get("sl_pct"), "tp_pct": emeta.get("tp_pct"),
-            "why": f"rule_sma20 via FeatureSnapshot SSOT conf={conf*100:.0f}%; exit={emeta.get('method')}",
+            "why": f"rule_sma20 via FeatureSnapshot SSOT model_score={conf*100:.0f}/100; exit={emeta.get('method')}",
             "strategy_id": "rule_sma20",
             "signal_path": "FEATURE_SSOT",
         })
@@ -491,7 +491,7 @@ def run(
             market_gate=ms_gate,
             enforce_market_gate=True,
         )
-        if cls == "FULL_FILL":
+        if cls in ("PAPER_FILLED", "FULL_FILL"):
             open_syms.add(sym)
             new_entries_today += 1
         fills_cls.append(cls)
@@ -530,7 +530,7 @@ def run(
     report["skipped_existing_position"] = sum(1 for c in fills_cls if c == "SKIPPED_EXISTING_POSITION")
     report["skipped_cooldown"] = sum(1 for c in fills_cls if c == "SKIPPED_COOLDOWN")
     report["skipped_cash"] = sum(1 for c in fills_cls if c == "SKIPPED_CASH")
-    report["fills_full"] = sum(1 for c in fills_cls if c == "FULL_FILL")
+    report["fills_full"] = sum(1 for c in fills_cls if c in ("PAPER_FILLED", "FULL_FILL"))
     report["portfolio_heat_post"] = estimate_open_heat(pf.positions, equity=float(pf.equity(marks)))
     report["risk_skips"] = sum(1 for c in fills_cls if str(c).startswith("SKIPPED_RISK_"))
     report["fills_already_applied"] = sum(1 for c in fills_cls if c == "ALREADY_APPLIED")
