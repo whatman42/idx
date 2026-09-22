@@ -62,7 +62,7 @@ def test_telegram_failure_does_not_change_cash(tmp_path):
         state, symbol="AAA", price=100.0, weight=0.05,
         signal_id="sig_tg_iso", timestamp="2026-09-19T09:00:00+00:00",
     )
-    assert status == "FULL_FILL"
+    assert status == "PAPER_FILLED"
     cash_after_fill = state.cash
     store.save_atomic(state)
     report = {"status": "TELEGRAM_DELIVERY_FAILED", "paper_portfolio": {"cash": cash_after_fill}}
@@ -79,7 +79,7 @@ def test_rerun_idempotent_no_duplicate_fill(tmp_path):
         state, symbol="BBB", price=110.0, weight=0.05,
         signal_id="sig_rerun_1", timestamp="2026-09-19T09:00:00+00:00",
     )
-    assert st1 == "FULL_FILL"
+    assert st1 == "PAPER_FILLED"
     store.save_atomic(state)
     state2 = store.load()
     state2, _, st2 = apply_long_entry(
