@@ -36,7 +36,9 @@ def format_signal_message(
         ]
         conf = top.get("confidence")
         if conf is not None:
-            lines.append(f"  Confidence: {float(conf)*100:.1f}%")
+            c = float(conf)
+            score = c * 100.0 if c <= 1.0 else c
+            lines.append(f"  Model score: {score:.0f}/100")
         if top.get("why"):
             lines.append(f"  Why: {top.get('why')}")
         lines.append("")
@@ -52,6 +54,10 @@ def format_signal_message(
     ]
     if portfolio.get("exposure") is not None:
         lines.append(f"  Exposure: {float(portfolio['exposure'])*100:.1f}%")
+    if portfolio.get("equity_pnl") is not None:
+        lines.append(f"  Total P/L (equity): {_rp(portfolio.get('equity_pnl'))}")
+    elif portfolio.get("equity") is not None and portfolio.get("initial_capital") is not None:
+        lines.append(f"  Total P/L (equity): {_rp(float(portfolio['equity']) - float(portfolio['initial_capital']))}")
     if portfolio.get("realized_pnl") is not None:
         lines.append(f"  Realized: {_rp(portfolio.get('realized_pnl'))}")
     if portfolio.get("unrealized_pnl") is not None:
@@ -71,8 +77,8 @@ def format_signal_message(
                 lines.append(f"  {sym}")
         lines.append("")
     lines += [
-        f"Governor: {governor}", f"DQ: {dq}", "",
-        "⚠️ SIGNAL ONLY", "Paper simulation — NO LIVE EXECUTION",
+        f"Authority: {governor}", f"DQ: {dq}", "",
+        "⚠️ PAPER PATH", "Paper simulation — NO LIVE EXECUTION",
     ]
     return "\n".join(lines)
 
