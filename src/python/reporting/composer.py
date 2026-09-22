@@ -11,6 +11,21 @@ from src.python.reporting.models import CycleReport, ExitReport, OpenPositionVie
 _SEP = "══════════════════════════════"
 
 
+def _entry_date(ts: Optional[str]) -> str:
+    """Prefer calendar date; hide synthetic midnight if no intraday."""
+    if not ts:
+        return "-"
+    s = str(ts).strip()
+    if "T00:00:00" in s or s.endswith(" 00:00:00"):
+        return s[:10]
+    if len(s) >= 10 and s[4] == "-" and s[7] == "-":
+        # keep full if has non-midnight time
+        if "T" in s and not s[11:19].startswith("00:00:00"):
+            return s[:19].replace("T", " ")
+        return s[:10]
+    return s
+
+
 def _rp(x: float | int | None) -> str:
     if x is None:
         return "-"
@@ -161,8 +176,12 @@ class DeterministicComposer:
             ]
             return lines
 
-        total_pnl = float(pf.realized_pnl or 0) + float(pf.unrealized_pnl or 0)
+        # SSOT: Total P/L = equity − initial_capital (includes fees in cash)
         base = float(pf.initial_capital or 0)
+        equity = float(pf.equity or 0)
+        total_pnl = equity - base if base else 0.0
+        realized = float(pf.realized_pnl or 0)
+        unrealized = float(pf.unrealized_pnl or 0)
         pnl_pct = (total_pnl / base * 100.0) if base > 0 else None
         n_pos = len(pf.open_positions or [])
 
@@ -173,6 +192,9 @@ class DeterministicComposer:
             f"Dana Terpakai    : {_pct(pf.exposure_pct)}",
             f"Total P/L        : {_rp(total_pnl)}"
             + (f" ({_pct(pnl_pct)})" if pnl_pct is not None else ""),
+            f"  Realized P/L   : {_rp(realized)}",
+            f"  Unrealized P/L : {_rp(unrealized)}",
+            f"  (Total P/L = Equity − Modal; fees tercermin di equity)",
             "",
             f"📌 Saham Dimiliki : {n_pos} posisi" if n_pos else "📌 Saham Dimiliki : Tidak ada",
             "",
@@ -195,9 +217,9 @@ class DeterministicComposer:
             lines.append("")
             lines.append("➡️ Tindakan:")
             fill = getattr(sig, "fill_status", "") or ""
-            if fill in ("FULL_FILL", "FILLED", "FULL FILL"):
+            if fill in ("PAPER_FILLED", "FULL_FILL", "FILLED", "FULL FILL"):
                 lines.append("📥 PAPER FILL")
-                lines.append("Status     : FILLED")
+                lines.append("Status     : PAPER_FILLED")
                 if sig.lots or sig.shares:
                     lines.append(f"Jumlah     : {_num(sig.lots, 0)} lot / {_num(sig.shares, 0)} lembar")
                 if sig.entry_reference:
@@ -254,7 +276,6 @@ class DeterministicComposer:
     def _position_detail(self, p: OpenPositionView) -> list[str]:
         lots_s = _num(p.lots, 0)
         shares_s = _num(p.shares, 0)
-        # Modal Posisi = cost basis; Nilai Pasar = qty × mark
         cost_basis = getattr(p, "cost_basis", None)
         if cost_basis is None and p.entry_price is not None and p.shares is not None:
             try:
@@ -276,7 +297,7 @@ class DeterministicComposer:
             f"  Nilai Pasar    : {_rp(market_value)}",
             f"  Target Profit  : {_rp(p.tp2) if p.tp2 else (_rp(p.tp1) if p.tp1 else '-')}",
             f"  Batas Rugi     : {_rp(p.stop_loss) if p.stop_loss else '-'}",
-            f"  Tanggal Beli   : {p.opened_at or '-'}",
+            f"  Tanggal Beli   : {_entry_date(p.opened_at)}",
             f"  Unrealized P/L : {_rp(p.unrealized_pnl)}",
         ]
 
@@ -391,9 +412,21 @@ class DeterministicComposer:
             lines.append("Tidak ada order yang dikirim ke broker.")
             lines.append("Tidak ada live execution.")
             lines.append("Fill hanya dicatat di paper portfolio ledger.")
-            lines.append("Fee model   : SIMULATION (bukan tarif broker)")
-            lines.append("Buy fee     : 15 bps • Exit fee: 25 bps")
-            lines.append("Slippage    : 5 bps • Intrabar: SL PRECEDENCE")
+            try:
+                from src.python.ops.paper_portfolio import simulation_assumptions
+                sa = simulation_assumptions()
+                buy = sa.get("buy_fee_bps", 15)
+                exit_f = sa.get("exit_fee_bps", 25)
+                slip = sa.get("slippage_bps", 5)
+                rt = float(buy) + float(exit_f) + 2.0 * float(slip)
+                lines.append(f"Fee model   : {sa.get('fee_model', 'SIMULATION')} (bukan tarif broker)")
+                lines.append(f"Buy fee     : {buy} bps • Exit fee: {exit_f} bps")
+                lines.append(f"Slippage    : {slip} bps per side • RT est: {rt:.0f} bps")
+                lines.append(f"Intrabar    : {sa.get('intrabar_policy', 'SL_PRECEDENCE')}")
+            except Exception:
+                lines.append("Fee model   : SIMULATION (bukan tarif broker)")
+                lines.append("Buy fee     : 15 bps • Exit fee: 25 bps")
+                lines.append("Slippage    : 5 bps/side • RT est: 50 bps")
             lines.append("Output ini adalah hasil sistem dan bukan")
             lines.append("rekomendasi investasi personal.")
             lines.append("NO LIVE EXECUTION")
