@@ -32,7 +32,7 @@ def test_buy_instant_paper_fill():
         st, symbol="ABDA", price=4972.0, weight=0.05, signal_id="sig_abda",
         timestamp="2026-09-15", fee_bps=15.0, slippage_bps=5.0,
     )
-    assert cls == "FULL_FILL"
+    assert cls == "PAPER_FILLED"
     assert trade is not None
     assert trade["status"] == "FILLED"
     assert trade["fill_price"] > 4972.0
@@ -48,7 +48,7 @@ def test_sell_instant_paper_fill():
         st, symbol="BBCA", price=9000.0, weight=0.10, signal_id="s1",
         timestamp="d1", fee_bps=0, slippage_bps=0,
     )
-    assert cls == "FULL_FILL"
+    assert cls == "PAPER_FILLED"
     st, trade, reason = apply_exit(
         st, symbol="BBCA", price=9100.0, timestamp="d2", reason="MANUAL", fee_bps=0, slippage_bps=0
     )
@@ -82,7 +82,7 @@ def test_fee_and_slippage_on_buy():
         st, symbol="BBCA", price=ref, weight=0.10, signal_id="s1",
         timestamp="d1", fee_bps=15.0, slippage_bps=10.0,
     )
-    assert cls == "FULL_FILL", cls
+    assert cls == "PAPER_FILLED", cls
     assert abs(trade["fill_price"] - ref * (1.0 + 10.0 / 10000.0)) < 1e-6
     assert abs(trade["fee"] - trade["notional"] * 0.0015) < 1e-6
     assert trade["slippage_bps"] == 10.0
@@ -241,7 +241,7 @@ def test_idempotency_duplicate_signal():
         st, symbol="BBCA", price=9000.0, weight=0.10, signal_id="same",
         timestamp="d1", fee_bps=0, slippage_bps=0,
     )
-    assert c1 == "FULL_FILL"
+    assert c1 == "PAPER_FILLED"
     assert c2 == "ALREADY_APPLIED"
 
 
@@ -266,14 +266,13 @@ def test_determinism_same_input_same_fill():
 
 
 def test_abda_no_double_entry_default_policy():
-    """Regression: same symbol day2 must NOT scale-in under ops default."""
     st = new_session()
     cash0 = st.cash
     st, t1, c1 = apply_long_entry(
         st, symbol="ABDA", price=4962.0, weight=0.05, signal_id="sig_2026-09-15_ABDA",
         timestamp="2026-09-15", fee_bps=15.0, slippage_bps=5.0,
     )
-    assert c1 == "FULL_FILL" and t1 is not None
+    assert c1 == "PAPER_FILLED" and t1 is not None
     cash1 = st.cash
     assert cash1 < cash0
     assert abs(cash0 - cash1 - t1["total_cost"]) < 1e-6
@@ -286,7 +285,7 @@ def test_abda_no_double_entry_default_policy():
     )
     assert c2 == "SKIPPED_EXISTING_POSITION"
     assert t2 is None
-    assert st.cash == cash1  # cash must not move on skip
+    assert st.cash == cash1
     assert abs(st.open_positions()["ABDA"].qty / 100.0 - lots1) < 1e-9
     assert abs(st.open_positions()["ABDA"].avg_entry - entry1) < 1e-9
 
@@ -297,19 +296,18 @@ def test_scale_in_opt_in_averages_and_debits_cash():
         st, symbol="ABDA", price=4962.0, weight=0.05, signal_id="s1",
         timestamp="2026-09-15", fee_bps=0, slippage_bps=0, allow_scale_in=True,
     )
-    assert c1 == "FULL_FILL"
+    assert c1 == "PAPER_FILLED"
     cash1 = st.cash
     st, t2, c2 = apply_long_entry(
         st, symbol="ABDA", price=4972.0, weight=0.05, signal_id="s2",
         timestamp="2026-09-16", fee_bps=0, slippage_bps=0, allow_scale_in=True,
     )
-    assert c2 == "FULL_FILL" and t2 is not None
+    assert c2 == "PAPER_FILLED" and t2 is not None
     assert t2.get("scale_in") is True
     assert st.cash < cash1
     assert abs(cash1 - st.cash - t2["total_cost"]) < 1e-6
     pos = st.open_positions()["ABDA"]
-    assert pos.qty >= 200.0 - 1e-6  # at least 2 lots of 100 if sized that way
-    # avg between 4962 and 4972
+    assert pos.qty >= 200.0 - 1e-6
     assert 4962.0 - 1e-6 <= pos.avg_entry <= 4972.0 + 1e-6
 
 
@@ -319,7 +317,7 @@ def test_cooldown_after_exit():
         st, symbol="BBCA", price=9000.0, weight=0.10, signal_id="s1",
         timestamp="2026-09-01", fee_bps=0, slippage_bps=0,
     )
-    assert c1 == "FULL_FILL"
+    assert c1 == "PAPER_FILLED"
     st, _, r = apply_exit(st, symbol="BBCA", price=9100.0, timestamp="2026-09-02", fee_bps=0, slippage_bps=0)
     assert r != "NO_POSITION"
     st, _, c2 = apply_long_entry(
@@ -331,7 +329,7 @@ def test_cooldown_after_exit():
         st, symbol="BBCA", price=9050.0, weight=0.10, signal_id="s3",
         timestamp="2026-09-10", fee_bps=0, slippage_bps=0, min_reentry_days=5,
     )
-    assert c3 == "FULL_FILL"
+    assert c3 == "PAPER_FILLED"
 
 
 def test_equity_invariant_cash_plus_mv():
@@ -340,36 +338,33 @@ def test_equity_invariant_cash_plus_mv():
         st, symbol="ABDA", price=4962.0, weight=0.05, signal_id="inv1",
         timestamp="2026-09-15", fee_bps=15.0, slippage_bps=5.0,
     )
-    assert cls == "FULL_FILL"
+    assert cls == "PAPER_FILLED"
     marks = {"ABDA": 4960.0}
     st = mark_to_market(st, marks, "2026-09-15")
     eq = st.equity(marks)
-    assert abs(eq - (st.cash + st.market_value(marks))) < 1.0  # 1 rupiah tolerance
+    assert abs(eq - (st.cash + st.market_value(marks))) < 1.0
     errs = validate_portfolio_accounting(st, marks)
     assert errs == [], errs
 
 
 def test_replay_sep15_16_abda_one_lot():
-    """Replay: only day-1 BUY in trades → 1 lot @~4962; day-2 not in ledger if skipped."""
     st = new_session()
     st, t1, c1 = apply_long_entry(
         st, symbol="ABDA", price=4962.0, weight=0.05, signal_id="sig_2026-09-15_ABDA",
         timestamp="2026-09-15", fee_bps=15.0, slippage_bps=5.0,
     )
-    assert c1 == "FULL_FILL"
+    assert c1 == "PAPER_FILLED"
     cash_after_d1 = st.cash
     st, t2, c2 = apply_long_entry(
         st, symbol="ABDA", price=4972.0, weight=0.05, signal_id="sig_2026-09-16_ABDA",
         timestamp="2026-09-16", fee_bps=15.0, slippage_bps=5.0,
     )
     assert c2 == "SKIPPED_EXISTING_POSITION"
-    # rebuild from trades must match live state (only 1 BUY)
     rebuilt = rebuild_portfolio_from_trades(st.trades, initial_capital=DEFAULT_INITIAL_CAPITAL)
     assert "ABDA" in rebuilt.open_positions()
     pos = rebuilt.open_positions()["ABDA"]
-    assert abs(pos.qty - 100.0) < 1e-6 or pos.qty >= 100.0  # at least 1 lot
+    assert abs(pos.qty - 100.0) < 1e-6 or pos.qty >= 100.0
     assert abs(rebuilt.cash - cash_after_d1) < 1.0
-    # avg_entry near day-1 fill (with slippage)
     assert abs(pos.avg_entry - t1["fill_price"]) < 1e-6
 
 
@@ -379,7 +374,7 @@ def test_signal_id_idempotent_same_order():
         st, symbol="BBCA", price=9000.0, weight=0.10, signal_id="same_sig",
         timestamp="d1", fee_bps=0, slippage_bps=0,
     )
-    assert c1 == "FULL_FILL"
+    assert c1 == "PAPER_FILLED"
     cash1 = st.cash
     st, t2, c2 = apply_long_entry(
         st, symbol="BBCA", price=9000.0, weight=0.10, signal_id="same_sig",
@@ -397,13 +392,11 @@ def test_time_stop_exit():
         timestamp="2026-09-01", fee_bps=0, slippage_bps=0,
         time_stop_bars=3, trailing_pct=0.0,
     )
-    assert c1 == "FULL_FILL"
-    # day+1, +2: still open (mark between SL/TP)
+    assert c1 == "PAPER_FILLED"
     st, closed = process_tp_sl_exits(st, {"BBCA": 9100.0}, "2026-09-02", fee_bps=0, slippage_bps=0)
     assert closed == []
     st, closed = process_tp_sl_exits(st, {"BBCA": 9100.0}, "2026-09-03", fee_bps=0, slippage_bps=0)
     assert closed == []
-    # day+3 from entry (>=3 days) -> TIME_STOP
     st, closed = process_tp_sl_exits(st, {"BBCA": 9100.0}, "2026-09-04", fee_bps=0, slippage_bps=0)
     assert len(closed) == 1
     assert closed[0]["reason"] == "TIME_STOP"
@@ -417,14 +410,12 @@ def test_trailing_stop_ratchets_and_exits():
         timestamp="2026-09-01", fee_bps=0, slippage_bps=0,
         tp=5000.0, sl=3800.0, trailing_pct=0.05, time_stop_bars=0,
     )
-    assert c1 == "FULL_FILL"
-    # price rises -> peak updates, SL trails to 95% of peak
+    assert c1 == "PAPER_FILLED"
     st, closed = process_tp_sl_exits(st, {"TLKM": 4400.0}, "2026-09-02", fee_bps=0, slippage_bps=0)
     assert closed == []
     pos = st.open_positions()["TLKM"]
     assert pos.peak_mark >= 4400.0 - 1e-9
-    assert pos.sl >= 4400.0 * 0.95 - 1.0  # trailed up
-    # drop through trailed SL
+    assert pos.sl >= 4400.0 * 0.95 - 1.0
     trail_sl = float(pos.sl)
     st, closed = process_tp_sl_exits(st, {"TLKM": trail_sl - 1.0}, "2026-09-03", fee_bps=0, slippage_bps=0)
     assert len(closed) == 1
