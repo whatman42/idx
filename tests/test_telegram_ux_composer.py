@@ -32,7 +32,6 @@ def test_no_position_no_signal_beginner_ux():
     text = compose_telegram_message(report)
     assert "PORTOFOLIO SAHAM IDX" in text
     assert "KONDISI DANA" in text
-    # Canonical funds labels (composer contract)
     assert "Modal Awal" in text
     assert "Total Equity" in text
     assert "Dana Tunai" in text
@@ -62,7 +61,7 @@ def test_with_position_buy_signal():
         confidence=72,
         confidence_method="sma20",
         explanation=["Ranking #1 universe filter"],
-        fill_status="FULL_FILL",
+        fill_status="PAPER_FILLED",
     )
     report = build_cycle_report(
         trading_date="2026-09-15",
