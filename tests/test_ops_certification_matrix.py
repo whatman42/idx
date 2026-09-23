@@ -79,7 +79,7 @@ def test_cert_daily_e2e_paper_fill_and_ledger(tmp_path):
         signal_id="sig_cert_001",
         timestamp="2026-08-02T02:00:00+00:00",
     )
-    assert status == "FULL_FILL"
+    assert status == "PAPER_FILLED"
     assert trade is not None
     assert trade.get("fee", 0) > 0
     assert trade.get("slippage_bps", 0) > 0
@@ -101,7 +101,7 @@ def test_cert_restart_replay_no_duplicate(tmp_path):
         signal_id="sig_replay_42",
         timestamp="2026-08-03T02:00:00+00:00",
     )
-    assert status == "FULL_FILL"
+    assert status == "PAPER_FILLED"
     store.save_atomic(state)
     trades1 = len(state.trades)
     cash1 = state.cash
@@ -131,7 +131,7 @@ def test_cert_ledger_rebuild(tmp_path):
         signal_id="sig_rb_1",
         timestamp="2026-08-04T02:00:00+00:00",
     )
-    assert status == "FULL_FILL"
+    assert status == "PAPER_FILLED"
     rebuilt = rebuild_portfolio_from_trades(list(state.trades), initial_capital=20_000_000.0)
     assert abs(rebuilt.cash - state.cash) < 1.0
     assert "CCC" in rebuilt.open_positions()
@@ -250,7 +250,7 @@ def test_cert_telegram_ssot_from_ledger():
         signal_id="sig_tg_1",
         timestamp="2026-08-05T02:00:00+00:00",
     )
-    assert status == "FULL_FILL"
+    assert status == "PAPER_FILLED"
     summ = summary(state)
     payload = {
         "cash": summ.get("cash", state.cash),
