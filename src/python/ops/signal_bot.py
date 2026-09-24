@@ -564,6 +564,8 @@ def run(
         report["status"] = report.get("status") or "NO_SIGNAL"
         report["signals_notified"] = 0
         pf_sum = report.get("paper_portfolio") or {}
+        _filled = list(report.get("filled_trades") or [])
+        _filled_syms = [str(x.get("symbol") or "") for x in _filled if x.get("symbol")]
         cycle = build_cycle_report(
             trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=None,
             exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
@@ -572,6 +574,9 @@ def run(
             data_source=str(report.get("data_source") or ""),
             no_signal_reasons=["Tidak ada kandidat BUY top-1 yang lolos filter hari ini."],
             status=str(report.get("status") or "NO_SIGNAL"),
+            signals_received=int(report.get("signals_received") or len(report.get("paper_fill_classifications") or []) or 0),
+            signals_filled=int(report.get("fills_full") or 0),
+            filled_symbols=_filled_syms,
         )
         report["cycle_report"] = cycle.to_dict()
         try:
@@ -630,6 +635,8 @@ def run(
         )
         if sig.tp1 <= 0 and sig.tp2 > 0 and sig.entry_reference > 0:
             sig.tp1 = sig.entry_reference + (sig.tp2 - sig.entry_reference) * 0.5
+        _filled = list(report.get("filled_trades") or [])
+        _filled_syms = [str(x.get("symbol") or "") for x in _filled if x.get("symbol")]
         cycle = build_cycle_report(
             trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=sig,
             exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
@@ -637,6 +644,9 @@ def run(
             dq_status=str(report.get("dq_status") or ""),
             data_source=str(report.get("data_source") or ""),
             status=str(report.get("status") or "SUCCESS"),
+            signals_received=int(report.get("signals_received") or len(report.get("paper_fill_classifications") or []) or 0),
+            signals_filled=int(report.get("fills_full") or 0),
+            filled_symbols=_filled_syms,
         )
         report["cycle_report"] = cycle.to_dict()
         report["integrity_ok"] = cycle.integrity_ok
