@@ -374,18 +374,25 @@ class DeterministicComposer:
 
     def _system_block(self, report: CycleReport) -> list[str]:
         sig = report.signal
-        n_pos = len(report.portfolio.open_positions) if report.portfolio and report.portfolio.open_positions else 0
+        open_pos = list(report.portfolio.open_positions) if report.portfolio and report.portfolio.open_positions else []
+        n_pos = len(open_pos)
+        pos_syms = [str(p.symbol) for p in open_pos if getattr(p, "symbol", None)]
+
         filled = int(getattr(report, "signals_filled", 0) or 0)
         received = int(getattr(report, "signals_received", 0) or 0)
+        filled_syms = [s for s in list(getattr(report, "filled_symbols", None) or []) if s]
+
         if received <= 0 and sig and sig.decision in ("BUY", "SELL"):
-            received = 1
+            received = max(1, n_pos) if n_pos else 1
         if filled <= 0 and sig and (getattr(sig, "fill_status", "") or "") in (
             "PAPER_FILLED", "FULL_FILL", "FILLED", "FULL FILL"
         ):
-            filled = 1
-        filled_syms = list(getattr(report, "filled_symbols", None) or [])
-        if not filled_syms and sig and sig.decision == "BUY" and filled:
-            filled_syms = [sig.symbol]
+            filled = n_pos if n_pos > 0 else 1
+        if not filled_syms:
+            if n_pos > 0:
+                filled_syms = pos_syms
+            elif sig and sig.decision == "BUY" and filled:
+                filled_syms = [sig.symbol]
 
         gate = report.risk_gate or "-"
         lines = [
@@ -396,7 +403,7 @@ class DeterministicComposer:
             f"Posisi terbuka         : {n_pos}",
         ]
         if filled_syms:
-            lines.append(f"Aset terisi (cycle)    : {', '.join(filled_syms)}")
+            lines.append(f"Aset di portofolio     : {', '.join(filled_syms)}")
         lines += [
             f"Risk gate              : {gate}",
             f"Status sistem          : {_system_status(report)}",
