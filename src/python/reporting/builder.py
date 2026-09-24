@@ -215,6 +215,9 @@ def build_cycle_report(
     no_signal_reasons: Optional[list[str]] = None,
     risk_gate: str = "PASS",
     status: str = "SUCCESS",
+    signals_received: int = 0,
+    signals_filled: int = 0,
+    filled_symbols: Optional[list[str]] = None,
 ) -> CycleReport:
     portfolio = build_portfolio_snapshot(pf_summary, marks)
     exit_reports: list[ExitReport] = []
@@ -237,6 +240,9 @@ def build_cycle_report(
         model_version=model_version,
         no_signal_reasons=list(no_signal_reasons or []),
         risk_gate=risk_gate,
+        signals_received=int(signals_received or 0),
+        signals_filled=int(signals_filled or 0),
+        filled_symbols=list(filled_symbols or []),
     )
     errs = validate_cycle_report(report)
     if errs:
