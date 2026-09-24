@@ -531,6 +531,16 @@ def run(
     report["skipped_cooldown"] = sum(1 for c in fills_cls if c == "SKIPPED_COOLDOWN")
     report["skipped_cash"] = sum(1 for c in fills_cls if c == "SKIPPED_CASH")
     report["fills_full"] = sum(1 for c in fills_cls if c in ("PAPER_FILLED", "FULL_FILL"))
+    # Symbols for Telegram: prefer new fills; else open positions (same-day re-run / ALREADY_APPLIED)
+    if not report.get("filled_trades"):
+        report["filled_trades"] = []
+    _syms_from_fills = [str(x.get("symbol") or "") for x in report["filled_trades"] if x.get("symbol")]
+    _syms_from_pos = sorted(str(s) for s in (pf.positions or {}) if s)
+    report["filled_symbols"] = _syms_from_fills or _syms_from_pos
+    # If no NEW fills but positions exist, treat held same-day as filled count for UX sync
+    if report["fills_full"] == 0 and _syms_from_pos:
+        report["fills_full"] = len(_syms_from_pos)
+        report["signals_received"] = max(int(report.get("signals_received") or 0), len(fills_cls) or len(_syms_from_pos))
     report["portfolio_heat_post"] = estimate_open_heat(pf.positions, equity=float(pf.equity(marks)))
     report["risk_skips"] = sum(1 for c in fills_cls if str(c).startswith("SKIPPED_RISK_"))
     report["fills_already_applied"] = sum(1 for c in fills_cls if c == "ALREADY_APPLIED")
@@ -565,7 +575,7 @@ def run(
         report["signals_notified"] = 0
         pf_sum = report.get("paper_portfolio") or {}
         _filled = list(report.get("filled_trades") or [])
-        _filled_syms = [str(x.get("symbol") or "") for x in _filled if x.get("symbol")]
+        _filled_syms = list(report.get("filled_symbols") or [str(x.get("symbol") or "") for x in _filled if x.get("symbol")])
         cycle = build_cycle_report(
             trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=None,
             exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
@@ -636,7 +646,7 @@ def run(
         if sig.tp1 <= 0 and sig.tp2 > 0 and sig.entry_reference > 0:
             sig.tp1 = sig.entry_reference + (sig.tp2 - sig.entry_reference) * 0.5
         _filled = list(report.get("filled_trades") or [])
-        _filled_syms = [str(x.get("symbol") or "") for x in _filled if x.get("symbol")]
+        _filled_syms = list(report.get("filled_symbols") or [str(x.get("symbol") or "") for x in _filled if x.get("symbol")])
         cycle = build_cycle_report(
             trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=sig,
             exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
