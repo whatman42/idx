@@ -125,6 +125,10 @@ class CycleReport:
     model_version: str = ""
     no_signal_reasons: list[str] = field(default_factory=list)
     risk_gate: str = "PASS"
+    # Cycle fill/signal sync (SSOT counts for Telegram status)
+    signals_received: int = 0   # candidates evaluated this cycle
+    signals_filled: int = 0     # PAPER_FILLED count this cycle
+    filled_symbols: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -144,4 +148,7 @@ class CycleReport:
             "model_version": self.model_version,
             "no_signal_reasons": list(self.no_signal_reasons),
             "risk_gate": self.risk_gate,
+            "signals_received": int(self.signals_received),
+            "signals_filled": int(self.signals_filled),
+            "filled_symbols": list(self.filled_symbols),
         }
