@@ -2,7 +2,10 @@
 # Schedule: Mon–Fri 09:30 UTC (= 16:30 Asia/Jakarta EOD window)
 # Cron uses UTC. Weekend not scheduled (1-5). Holiday: in-process guard only.
 # NO live trading. NO broker. NO GUI.
-# Concurrency: cancel-in-progress=false — never cancel mid-fill (ledger safety).
+# Concurrency (optimized):
+#   - schedule + OPERATIONAL/PAPER dispatch → idx-ops-ledger, cancel=false (ledger SSOT)
+#   - TEST dispatch → idx-ops-test-<branch>, cancel=true (stale tests drop; no ledger risk)
+# GitHub cron can still delay hours under platform load; concurrency only removes self-queue noise.
 
 name: IDX Signal Bot
 
@@ -33,8 +36,9 @@ on:
         type: boolean
 
 concurrency:
-  group: idx-operational
-  cancel-in-progress: false
+  # One live ledger queue for real paper ops; TEST never blocks schedule.
+  group: ${{ github.event_name == 'schedule' && 'idx-ops-ledger' || (github.event.inputs.mode == 'TEST' && format('idx-ops-test-{0}', github.ref_name) || 'idx-ops-ledger') }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'TEST' }}
 
 permissions:
   contents: write

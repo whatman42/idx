@@ -101,7 +101,9 @@ def test_idx_signal_workflow_has_runtime_guards():
     assert "cron:" in yml
     assert "1-5" in yml
     assert "concurrency:" in yml
-    assert "cancel-in-progress: false" in yml
+    assert "idx-ops-ledger" in yml
+    assert "cancel-in-progress:" in yml
+    assert "idx-ops-test-" in yml
     assert "secrets.TELEGRAM_BOT_TOKEN" in yml
     assert "echo $TELEGRAM" not in yml
     assert "cycle_id" in yml.lower() or "IDX_CYCLE_ID" in yml
