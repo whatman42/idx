@@ -1,9 +1,16 @@
-"""Sector concentration helpers — risk/research plane."""
+"""Sector concentration — soft risk; NO_DATA continues."""
 from __future__ import annotations
 
 from typing import Mapping, Optional
 
-from src.python.idx_enrichment.models import DataAuthority, EnrichmentDecision, SectorSnapshot
+from src.python.idx_enrichment.models import (
+    DataAuthority,
+    DataPresence,
+    EnrichmentDecision,
+    GateOutcome,
+    SectorSnapshot,
+)
+from src.python.idx_enrichment.policy import DEFAULT_POLICY, EnrichmentPolicy
 
 MAX_SECTOR_WEIGHT = 0.35
 
@@ -38,17 +45,21 @@ def evaluate_sector_add(
     sector_map: Mapping[str, SectorSnapshot],
     *,
     equity: float,
+    policy: Optional[EnrichmentPolicy] = None,
     max_sector_weight: float = MAX_SECTOR_WEIGHT,
 ) -> EnrichmentDecision:
+    pol = policy or DEFAULT_POLICY
     sym = str(symbol).upper().strip()
     snap = sector_map.get(sym)
     if snap is None or not snap.sector:
         return EnrichmentDecision(
             allow=True,
-            reason="NO_SECTOR_DATA",
+            outcome=GateOutcome.PASS.value,
+            reason="SECTOR_NO_DATA",
             layer="sector",
             authority=DataAuthority.RISK_GATE.value,
-            detail="sector unknown — pass",
+            presence=DataPresence.NO_DATA.value,
+            detail="sector unknown — continue (optional)",
             symbols_affected=[sym],
         )
     exp = sector_exposure(open_positions, sector_map, equity=equity)
@@ -56,17 +67,21 @@ def evaluate_sector_add(
     if projected > max_sector_weight + 1e-9:
         return EnrichmentDecision(
             allow=False,
+            outcome=GateOutcome.BLOCK.value,
             reason="SKIPPED_SECTOR_CONCENTRATION",
             layer="sector",
             authority=DataAuthority.RISK_GATE.value,
+            presence=DataPresence.DATA_PRESENT.value,
             detail=f"sector={snap.sector} projected={projected:.3f}>{max_sector_weight:.3f}",
             symbols_affected=[sym],
         )
     return EnrichmentDecision(
         allow=True,
-        reason="PASS",
+        outcome=GateOutcome.PASS.value,
+        reason="SECTOR_PASS",
         layer="sector",
         authority=DataAuthority.RISK_GATE.value,
+        presence=DataPresence.DATA_PRESENT.value,
         detail=f"sector={snap.sector} projected={projected:.3f}",
         symbols_affected=[sym],
     )
