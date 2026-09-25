@@ -1,6 +1,13 @@
 """Public free OHLCV provider via yfinance.
 
-NOT official BEI data. auto_adjust=True. Full-universe batch download.
+DATA PLANE ROLE: MARKET_DATA_OHLCV (convenience historical bars).
+
+- NOT official BEI / IDX market-structure authority.
+- NOT the source of truth for corporate actions, delisting, or IDX-IC sectors.
+- Use IdxEnrichmentProvider (local cache) for Indonesian reference metadata.
+- auto_adjust=True. Full-universe batch download.
+
+See src.python.data_plane for the dual-plane architecture.
 """
 from __future__ import annotations
 
@@ -156,6 +163,7 @@ def fetch_and_save_csv(
         "symbols_loaded_count": int(contract.df["symbol"].nunique()),
         "sha256": hashlib.sha256(raw).hexdigest(),
         "official_bei": False,
+        "data_plane_role": "MARKET_DATA_OHLCV",
         "status": "PUBLIC_RESEARCH_OHLCV",
         "universe_scan": True,
         "fetched_at": datetime.utcnow().isoformat() + "Z",
