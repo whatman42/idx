@@ -1,6 +1,6 @@
-"""Corporate Action Event Guard — hard/conditional protection around CA windows.
+"""Corporate Action Event Guard — facts → CA_CLEAR | CA_REVIEW | CA_BLOCK.
 
-Does NOT generate BUY signals. Blocks or flags entries when price moves may be CA-driven.
+Never emits BUY/SELL/HOLD. NO_DATA is never silent PASS (uses CA_REVIEW or BLOCK).
 """
 from __future__ import annotations
 
@@ -8,12 +8,14 @@ from datetime import date, datetime, timedelta
 from typing import Iterable, Optional
 
 from src.python.idx_enrichment.models import (
+    CAOutcome,
     CorporateActionEvent,
     CorporateActionType,
     DataAuthority,
+    DataPresence,
     EnrichmentDecision,
-    EventGuardDecision,
 )
+from src.python.idx_enrichment.policy import DEFAULT_POLICY, EnrichmentPolicy, resolve_presence
 
 DEFAULT_BLACKOUT_BEFORE_DAYS = 1
 DEFAULT_BLACKOUT_AFTER_DAYS = 1
@@ -31,9 +33,8 @@ MATERIAL_ACTIONS = {
 def _parse_day(s: str) -> Optional[date]:
     if not s:
         return None
-    s = str(s).strip()[:10]
     try:
-        return datetime.strptime(s, "%Y-%m-%d").date()
+        return datetime.strptime(str(s).strip()[:10], "%Y-%m-%d").date()
     except ValueError:
         return None
 
@@ -57,9 +58,7 @@ def event_in_blackout(
     anchor = _anchor_date(ev)
     if not td or not anchor:
         return False
-    start = anchor - timedelta(days=max(0, before_days))
-    end = anchor + timedelta(days=max(0, after_days))
-    return start <= td <= end
+    return (anchor - timedelta(days=max(0, before_days))) <= td <= (anchor + timedelta(days=max(0, after_days)))
 
 
 def evaluate_corporate_actions(
@@ -67,45 +66,118 @@ def evaluate_corporate_actions(
     trading_date: str,
     events: Iterable[CorporateActionEvent],
     *,
+    policy: Optional[EnrichmentPolicy] = None,
     before_days: int = DEFAULT_BLACKOUT_BEFORE_DAYS,
     after_days: int = DEFAULT_BLACKOUT_AFTER_DAYS,
 ) -> EnrichmentDecision:
+    pol = policy or DEFAULT_POLICY
     sym = str(symbol).upper().strip()
-    material: list[CorporateActionEvent] = []
-    any_events = False
-    for ev in events or []:
-        if str(ev.symbol).upper().strip() != sym:
-            continue
-        any_events = True
+    ev_list = [e for e in (events or []) if str(e.symbol).upper().strip() == sym]
+
+    material_with_dates: list[CorporateActionEvent] = []
+    material_no_dates: list[CorporateActionEvent] = []
+    for ev in ev_list:
         if ev.action_type not in MATERIAL_ACTIONS:
             continue
-        if event_in_blackout(ev, trading_date, before_days=before_days, after_days=after_days):
-            material.append(ev)
+        if _anchor_date(ev):
+            material_with_dates.append(ev)
+        else:
+            material_no_dates.append(ev)
 
-    if material:
-        kinds = sorted({e.action_type.value for e in material})
+    if material_no_dates and not material_with_dates and not [
+        e for e in ev_list if e.action_type not in MATERIAL_ACTIONS
+    ]:
         return EnrichmentDecision(
             allow=False,
-            reason=EventGuardDecision.DATA_EVENT_REVIEW.value,
+            outcome=CAOutcome.CA_BLOCK.value,
+            reason="INVALID_CA_RECORD",
             layer="corporate_action",
             authority=DataAuthority.CONDITIONAL_GATE.value,
+            presence=DataPresence.INVALID.value,
+            detail="material CA without effective/ex date",
+            symbols_affected=[sym],
+        )
+
+    if not ev_list:
+        presence = DataPresence.NO_DATA
+        if pol.ca_on_no_data == "BLOCK":
+            return EnrichmentDecision(
+                allow=False,
+                outcome=CAOutcome.CA_BLOCK.value,
+                reason="CA_NO_DATA_BLOCK",
+                layer="corporate_action",
+                authority=DataAuthority.CONDITIONAL_GATE.value,
+                presence=presence.value,
+                detail="no CA cache — policy BLOCK",
+                symbols_affected=[sym],
+            )
+        return EnrichmentDecision(
+            allow=True,
+            outcome=CAOutcome.CA_REVIEW.value,
+            reason="CA_NO_DATA_REVIEW",
+            layer="corporate_action",
+            authority=DataAuthority.CONDITIONAL_GATE.value,
+            presence=presence.value,
+            detail="no CA cache — not certified clear; review flag only",
+            symbols_affected=[sym],
+        )
+
+    as_ofs = []
+    for e in ev_list:
+        ao = getattr(e.provenance, "as_of", "") or ""
+        if ao:
+            as_ofs.append(ao)
+    as_of = max(as_ofs) if as_ofs else ""
+    presence = resolve_presence(
+        has_record=True,
+        as_of=as_of,
+        trading_date=trading_date,
+        max_stale_days=pol.max_stale_days,
+    )
+    if presence == DataPresence.STALE:
+        if pol.ca_on_stale == "BLOCK":
+            return EnrichmentDecision(
+                allow=False,
+                outcome=CAOutcome.CA_BLOCK.value,
+                reason="CA_STALE_BLOCK",
+                layer="corporate_action",
+                authority=DataAuthority.CONDITIONAL_GATE.value,
+                presence=presence.value,
+                detail=f"CA cache as_of={as_of} stale vs {trading_date}",
+                symbols_affected=[sym],
+            )
+        return EnrichmentDecision(
+            allow=True,
+            outcome=CAOutcome.CA_REVIEW.value,
+            reason="CA_STALE_REVIEW",
+            layer="corporate_action",
+            authority=DataAuthority.CONDITIONAL_GATE.value,
+            presence=presence.value,
+            detail=f"CA cache stale as_of={as_of}",
+            symbols_affected=[sym],
+        )
+
+    in_blackout = [e for e in material_with_dates if event_in_blackout(e, trading_date, before_days=before_days, after_days=after_days)]
+    if in_blackout and pol.ca_blackout_block:
+        kinds = sorted({e.action_type.value for e in in_blackout})
+        return EnrichmentDecision(
+            allow=False,
+            outcome=CAOutcome.CA_BLOCK.value,
+            reason="CA_BLACKOUT",
+            layer="corporate_action",
+            authority=DataAuthority.CONDITIONAL_GATE.value,
+            presence=DataPresence.DATA_PRESENT.value,
             detail=f"CA blackout: {','.join(kinds)} near {trading_date}",
             symbols_affected=[sym],
         )
-    if not any_events:
-        return EnrichmentDecision(
-            allow=True,
-            reason=EventGuardDecision.NO_DATA.value,
-            layer="corporate_action",
-            authority=DataAuthority.CONDITIONAL_GATE.value,
-            detail="no corporate-action cache for symbol",
-            symbols_affected=[sym],
-        )
+
     return EnrichmentDecision(
         allow=True,
-        reason=EventGuardDecision.PASS.value,
+        outcome=CAOutcome.CA_CLEAR.value,
+        reason="CA_CLEAR",
         layer="corporate_action",
         authority=DataAuthority.CONDITIONAL_GATE.value,
+        presence=DataPresence.DATA_PRESENT.value,
         detail="no material CA in blackout window",
         symbols_affected=[sym],
     )
