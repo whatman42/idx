@@ -1,6 +1,6 @@
-"""IDX enrichment SSOT models — corporate action, liquidity, sector, financial stubs.
+"""IDX enrichment SSOT models — facts only; gates decide PASS/BLOCK/UNKNOWN.
 
-Production path: local cache + provenance only. No live idx.co.id scrape as SSOT.
+Outcomes never include BUY/SELL/HOLD (not strategy authority).
 """
 from __future__ import annotations
 
@@ -10,11 +10,18 @@ from typing import Any, Optional
 
 
 class DataAuthority(str, Enum):
-    HARD_GATE = "HARD_GATE"           # block entry if violated
+    HARD_GATE = "HARD_GATE"
     CONDITIONAL_GATE = "CONDITIONAL_GATE"
     RISK_GATE = "RISK_GATE"
     RESEARCH = "RESEARCH"
     INFORMATIONAL = "INFORMATIONAL"
+
+
+class DataPresence(str, Enum):
+    DATA_PRESENT = "DATA_PRESENT"
+    NO_DATA = "NO_DATA"
+    STALE = "STALE"
+    INVALID = "INVALID"
 
 
 class CorporateActionType(str, Enum):
@@ -27,11 +34,32 @@ class CorporateActionType(str, Enum):
     OTHER = "OTHER"
 
 
-class EventGuardDecision(str, Enum):
+class CAOutcome(str, Enum):
+    CA_CLEAR = "CA_CLEAR"
+    CA_REVIEW = "CA_REVIEW"
+    CA_BLOCK = "CA_BLOCK"
+
+
+class GateOutcome(str, Enum):
     PASS = "PASS"
-    DATA_EVENT_REVIEW = "DATA_EVENT_REVIEW"
-    NO_DATA = "NO_DATA"
     BLOCK = "BLOCK"
+    UNKNOWN = "UNKNOWN"
+    REVIEW = "REVIEW"
+
+
+@dataclass(frozen=True)
+class Provenance:
+    source: str = "idx_cache"
+    as_of: str = ""
+    retrieved_at: str = ""
+    effective_from: str = ""
+    effective_to: str = ""
+    version: str = "1"
+    symbol: str = ""
+    status: str = "UNKNOWN"
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -45,13 +73,13 @@ class CorporateActionEvent:
     payment_date: str = ""
     effective_date: str = ""
     description: str = ""
-    source: str = "idx_cache"
-    provenance: str = "local_cache"
-    as_of: str = ""
+    provenance: Provenance = field(default_factory=Provenance)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["action_type"] = self.action_type.value
+        if isinstance(self.provenance, Provenance):
+            d["provenance"] = self.provenance.to_dict()
         return d
 
 
@@ -64,11 +92,13 @@ class LiquiditySnapshot:
     trading_frequency: float = 0.0
     trading_days: int = 0
     market_cap: float = 0.0
-    source: str = "idx_cache"
-    provenance: str = "local_cache"
+    provenance: Provenance = field(default_factory=Provenance)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if isinstance(self.provenance, Provenance):
+            d["provenance"] = self.provenance.to_dict()
+        return d
 
 
 @dataclass(frozen=True)
@@ -78,16 +108,17 @@ class SectorSnapshot:
     subsector: str = ""
     industry: str = ""
     as_of: str = ""
-    source: str = "idx_cache"
-    provenance: str = "local_cache"
+    provenance: Provenance = field(default_factory=Provenance)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if isinstance(self.provenance, Provenance):
+            d["provenance"] = self.provenance.to_dict()
+        return d
 
 
 @dataclass(frozen=True)
 class FinancialSnapshot:
-    """Research-only. Requires publication_timestamp for PIT; period_end alone is insufficient."""
     symbol: str
     period_end: str = ""
     publication_timestamp: str = ""
@@ -97,8 +128,7 @@ class FinancialSnapshot:
     liabilities: Optional[float] = None
     equity: Optional[float] = None
     operating_cash_flow: Optional[float] = None
-    source: str = "xbrl_stub"
-    provenance: str = "research_only"
+    provenance: Provenance = field(default_factory=lambda: Provenance(status="RESEARCH"))
     authority: str = DataAuthority.RESEARCH.value
 
     def to_dict(self) -> dict[str, Any]:
@@ -108,9 +138,11 @@ class FinancialSnapshot:
 @dataclass
 class EnrichmentDecision:
     allow: bool
+    outcome: str
     reason: str
     layer: str
     authority: str
+    presence: str = DataPresence.NO_DATA.value
     detail: str = ""
     symbols_affected: list[str] = field(default_factory=list)
 
