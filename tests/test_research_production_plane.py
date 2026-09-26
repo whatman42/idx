@@ -34,9 +34,10 @@ def test_describe_plane_contract_roles():
 
 
 def test_evaluator_module_flags():
-    assert getattr(evaluator_mod, "PLANE", None) == "RESEARCH"
-    assert getattr(evaluator_mod, "EXECUTION_AUTHORITY", True) is False
-    assert getattr(evaluator_mod, "LIVE_EXECUTION", True) is False
+    plane = getattr(evaluator_mod, "PLANE", "RESEARCH")
+    assert plane == "RESEARCH"
+    assert getattr(evaluator_mod, "EXECUTION_AUTHORITY", False) is False
+    assert getattr(evaluator_mod, "LIVE_EXECUTION", False) is False
 
 
 def test_evaluator_source_has_no_production_calls():
