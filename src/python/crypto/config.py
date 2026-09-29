@@ -13,6 +13,8 @@ CRYPTO_SLIPPAGE_BPS = float(os.getenv("CRYPTO_SLIPPAGE_BPS", "5"))
 CRYPTO_INITIAL_CAPITAL_USDT = float(os.getenv("CRYPTO_INITIAL_CAPITAL_USDT", "10000"))
 CRYPTO_MAX_WEIGHT = float(os.getenv("CRYPTO_MAX_WEIGHT", "0.15"))
 CRYPTO_MAX_POSITIONS = int(os.getenv("CRYPTO_MAX_POSITIONS", "10"))
+CRYPTO_TP_PCT = float(os.getenv("CRYPTO_TP_PCT", "0.06"))
+CRYPTO_SL_PCT = float(os.getenv("CRYPTO_SL_PCT", "0.03"))
 CRYPTO_STATE_PATH = os.getenv("CRYPTO_STATE_PATH", "state/crypto/paper_ledger.json")
 CRYPTO_ENABLED = os.getenv("CRYPTO_ENABLED", "1").strip() not in ("0", "false", "FALSE", "no")
 
@@ -35,6 +37,8 @@ def crypto_sim_assumptions() -> dict:
         "buy_fee_bps": CRYPTO_FEE_BUY_BPS,
         "sell_fee_bps": CRYPTO_FEE_SELL_BPS,
         "slippage_bps": CRYPTO_SLIPPAGE_BPS,
+        "tp_pct": CRYPTO_TP_PCT,
+        "sl_pct": CRYPTO_SL_PCT,
         "base_currency": CRYPTO_BASE_CURRENCY,
         "live_execution": False,
         "note": "Simulation assumptions — not exchange fee schedule fact.",
