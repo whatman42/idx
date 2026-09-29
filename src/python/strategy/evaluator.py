@@ -1,8 +1,12 @@
-"""Backtest + Walk-Forward evaluator (Phase 2A / 2A.1).
+"""Backtest + Walk-Forward evaluator (Phase 2A / 2A.1) — RESEARCH PLANE ONLY.
 
 Deterministic, no look-ahead (signal_T → execute open_T+1),
 fee/slippage, fixed or risk weight, TP/SL, time exit.
 Produces EvidencePackage for PromotionGate.
+
+PLANE CONTRACT (see strategy.plane_contract):
+  Evaluator → EvidencePackage → PromotionGate  (ONLY valid path)
+  NEVER → PaperPortfolio / Ledger / Telegram / champion / BUY-SELL authority
 
 Phase 2A.1: evaluate_rule_sma20 defaults to Feature Engine path
 (rule_sma20_feature_signal_fn → sma_dist_20). Live signal_bot unchanged.
@@ -16,6 +20,10 @@ import numpy as np
 import pandas as pd
 
 from src.python.strategy.evidence import EvidencePackage, HardRejectCode, WindowMetrics
+
+PLANE = "RESEARCH"  # never PRODUCTION; no ledger/telegram/champion writes
+EXECUTION_AUTHORITY = False
+LIVE_EXECUTION = False
 
 SignalFn = Callable[[pd.DataFrame], pd.DataFrame]
 # bars in → signals with columns: timestamp, symbol, side (1=long), optional confidence
