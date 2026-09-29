@@ -1,6 +1,7 @@
 # CRYPTO PAPER plane — isolated from IDX equities.
 # PAPER ONLY. No exchange orders. Dynamic */USDT discovery via Binance public REST.
 # Schedule: daily 00:00 UTC (research/ops batch — not 24/7 daemon).
+# Default: process ALL eligible USDT pairs (CRYPTO_MAX_SYMBOLS=0).
 
 name: Crypto Paper Signal
 
@@ -15,9 +16,9 @@ on:
         default: false
         type: boolean
       max_symbols:
-        description: "Max eligible symbols to fetch OHLCV (universe discovery still full)"
+        description: "0 = ALL eligible USDT pairs (default). N>0 = deliberate SAMPLE for debug only."
         required: false
-        default: "40"
+        default: "0"
 
 concurrency:
   group: crypto-paper-ledger
@@ -26,7 +27,7 @@ concurrency:
 jobs:
   crypto-paper:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -50,8 +51,11 @@ jobs:
       - name: Run crypto paper bot
         env:
           CRYPTO_RESET: ${{ github.event.inputs.reset_portfolio == 'true' && '1' || '0' }}
-          CRYPTO_MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '40' }}
+          CRYPTO_MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '0' }}
           CRYPTO_STATE_PATH: state/crypto/paper_ledger.json
+          CRYPTO_TELEGRAM_ALLOW: "1"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           mkdir -p state/crypto artifacts/crypto
           python -m src.python.crypto.signal_bot

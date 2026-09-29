@@ -56,6 +56,8 @@ class UniverseDiscoveryReport:
     eligible: list[CryptoInstrument] = field(default_factory=list)
     blocked: list[CryptoInstrument] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    endpoint_used: str = ""
+    endpoint_fallback_used: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +75,9 @@ class UniverseDiscoveryReport:
             "errors": list(self.errors),
             "live_scrape_orders": False,
             "base_currency": "USDT",
+            "endpoint_used": self.endpoint_used,
+            "endpoint_fallback_used": self.endpoint_fallback_used,
+            "provenance": "MARKET_DATA_CRYPTO",
         }
 
 
