@@ -4,6 +4,10 @@ Order: OHLCV → FeatureSnapshot → SMA20+shadow → WFA → Evidence → Gate 
 Never auto PAPER_ALLOWED. Never LIVE_EXECUTION. Never mutates paper ledger.
 
 mode=smoke (8×90): pipeline only. mode=full (40×250): minimum for lifecycle review.
+
+Stat definitions:
+  VALID fold/symbol = n_trades > 0
+  NO_TRADES = insufficient evidence (excluded from positive ratios)
 """
 from __future__ import annotations
 
@@ -136,45 +140,69 @@ def _per_symbol_stats(
     for sym, g in bars.groupby("symbol", sort=False):
         res = backtest_crypto(g, cfg=cfg, signal_fn=sig_fn)
         trades = res.get("trades") or []
+        n_tr = int(res.get("n_trades") or 0)
         out.append(
             {
                 "symbol": str(sym),
+                "evidence_class": "VALID" if n_tr > 0 else "NO_TRADES",
                 "n_bars": int(len(g)),
-                "n_trades": int(res.get("n_trades") or 0),
-                "expectancy": float(res.get("expectancy") or 0.0),
-                "total_pnl": float(res.get("total_pnl") or 0.0),
-                "max_drawdown": float(res.get("max_drawdown") or 0.0),
-                "win_rate": res.get("win_rate"),
-                "profit_factor": _profit_factor(trades),
+                "n_trades": n_tr,
+                "expectancy": float(res.get("expectancy") or 0.0) if n_tr > 0 else None,
+                "total_pnl": float(res.get("total_pnl") or 0.0) if n_tr > 0 else None,
+                "max_drawdown": float(res.get("max_drawdown") or 0.0) if n_tr > 0 else None,
+                "win_rate": res.get("win_rate") if n_tr > 0 else None,
+                "profit_factor": _profit_factor(trades) if n_tr > 0 else None,
             }
         )
     return out
 
 
 def _symbol_consistency(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """VALID = trade_count > 0; NO_TRADES = insufficient evidence (not success/failure)."""
     if not rows:
         return {
             "n_symbols": 0,
-            "symbols_with_trades": 0,
+            "n_valid": 0,
+            "n_no_trades": 0,
             "positive_expectancy_symbols": 0,
-            "positive_symbol_ratio": 0.0,
+            "positive_symbol_ratio": None,
             "warning": "NO_SYMBOL_BREAKDOWN",
+            "definition": "positive_symbol_ratio over VALID only (n_trades > 0)",
         }
-    with_tr = [r for r in rows if int(r.get("n_trades") or 0) > 0]
-    pos = [r for r in with_tr if float(r.get("expectancy") or 0) > 0]
+    valid = [
+        r
+        for r in rows
+        if str(r.get("evidence_class") or "") == "VALID" or int(r.get("n_trades") or 0) > 0
+    ]
+    no_tr = [
+        r
+        for r in rows
+        if str(r.get("evidence_class") or "") == "NO_TRADES" or int(r.get("n_trades") or 0) <= 0
+    ]
+    pos = [
+        r
+        for r in valid
+        if r.get("expectancy") is not None and float(r.get("expectancy") or 0) > 0
+    ]
+    ratio = (len(pos) / len(valid)) if valid else None
     return {
         "n_symbols": len(rows),
-        "symbols_with_trades": len(with_tr),
+        "n_valid": len(valid),
+        "n_no_trades": len(no_tr),
+        "symbols_with_trades": len(valid),
         "positive_expectancy_symbols": len(pos),
-        "positive_symbol_ratio": (len(pos) / len(with_tr)) if with_tr else 0.0,
-        "worst_symbol_expectancy": float(
-            min((r.get("expectancy") or 0 for r in with_tr), default=0.0)
+        "positive_symbol_ratio": ratio,
+        "worst_symbol_expectancy": (
+            float(min((float(r.get("expectancy") or 0) for r in valid), default=0.0))
+            if valid
+            else None
         ),
         "warning": (
             "AGGREGATE_ONLY_UNRELIABLE"
-            if with_tr and (len(pos) / len(with_tr)) < 0.5
-            else None
+            if valid and ratio is not None and ratio < 0.5
+            else ("NO_VALID_SYMBOLS" if not valid and rows else None)
         ),
+        "definition": "positive_symbol_ratio = positive_expectancy / VALID; NO_TRADES excluded",
     }
 
 
@@ -293,7 +321,7 @@ def build_manual_review_report(
             "shadow_beats_reference_aggregate": cmp_.get("shadow_beats_reference"),
             "caveat": (
                 "Do NOT promote from aggregate delta_expectancy alone. "
-                "Require fold consistency and per-symbol distribution."
+                "Require fold consistency and per-symbol distribution over VALID only."
             ),
         },
         "consistency_warnings": [
@@ -303,8 +331,15 @@ def build_manual_review_report(
                 sh_block["symbol_consistency"].get("warning"),
                 (
                     "LOW_FOLD_CONSISTENCY_SHADOW"
-                    if (fold_shadow.get("positive_fold_ratio") or 0) < 0.5
-                    and (fold_shadow.get("n_folds") or 0) > 0
+                    if fold_shadow.get("positive_fold_ratio") is not None
+                    and float(fold_shadow.get("positive_fold_ratio") or 0) < 0.5
+                    and int(fold_shadow.get("n_valid_folds") or fold_shadow.get("n_folds") or 0) > 0
+                    else None
+                ),
+                (
+                    "NO_VALID_FOLDS_SHADOW"
+                    if int(fold_shadow.get("n_valid_folds") or 0) == 0
+                    and int(fold_shadow.get("n_folds") or 0) > 0
                     else None
                 ),
             ]
@@ -313,8 +348,9 @@ def build_manual_review_report(
         "review_checklist": [
             "Verify dataset mode (smoke vs full) and period coverage",
             "Inspect bars_per_symbol and universe coverage",
-            "Compare WFA fold expectancy distribution (not only mean)",
-            "Compare per-symbol expectancy distribution",
+            "Compare WFA fold expectancy on VALID folds only (n_trades > 0)",
+            "Compare per-symbol expectancy on VALID symbols only",
+            "Treat NO_TRADES symbols/folds as insufficient evidence, not failure/success",
             "Review worst fold and worst symbol",
             "Confirm hard rejects understood",
             "Confirm shadow gate != PAPER_ALLOWED",
