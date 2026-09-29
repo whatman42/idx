@@ -21,13 +21,6 @@ from src.python.ops.telegram_format import notification_id
 from src.python.ops.freshness import freshness_gate
 from src.python.ops.execution_authority import default_continuous_provider
 from src.python.market_structure import ExecutionGate, PriceRules
-from src.python.idx_enrichment import (
-    get_default_provider,
-    pre_entry_enrichment_gates,
-    decisions_summary,
-    EnrichmentPolicy,
-)
-from src.python.data_plane import describe_data_plane, assert_no_live_idx_scrape
 from src.python.ops.paper_portfolio import (
     DEFAULT_INITIAL_CAPITAL, DEFAULT_LOT_SIZE, PaperPortfolioStore, apply_long_entry,
     mark_to_market, new_session, summary as portfolio_summary, paper_reset_scope,
@@ -454,27 +447,6 @@ def run(
             stop_pct = max(0.0, (px - float(s["sl"])) / px)
         if stop_pct <= 0:
             stop_pct = 0.03
-        # IDX reference enrichment (not strategy authority): CA → Liquidity → Sector
-        _idx_ok, _idx_decs = pre_entry_enrichment_gates(
-            sym, trading_date,
-            proposed_weight=float(ENTRY_WEIGHT),
-            open_positions={k: (v if isinstance(v, dict) else {}) for k, v in (pf.positions or {}).items()},
-            equity=float(pf.equity(marks)),
-            provider=get_default_provider(),
-            policy=EnrichmentPolicy.from_env(),
-        )
-        if not _idx_ok:
-            _blk = next((d for d in _idx_decs if not d.allow), _idx_decs[-1] if _idx_decs else None)
-            _reason = (_blk.reason if _blk else 'IDX_ENRICHMENT_BLOCK')
-            fills_cls.append(f'SKIPPED_IDX_{_reason}')
-            s.update({
-                'fill_status': f'SKIPPED_IDX_{_reason}',
-                'why': s.get('why', '') + f' | idx_enrichment={_reason}',
-                'idx_enrichment': decisions_summary(_idx_decs),
-            })
-            continue
-        s['idx_enrichment'] = decisions_summary(_idx_decs)
-
         gate = gate_new_entry(
             equity=float(pf.equity(marks)),
             cash=float(pf.cash),
@@ -553,29 +525,12 @@ def run(
     # Phase-1 research-only: paper fills → episodes (fail-safe; never mutates ledger/execution)
     research_ingest_paper_trades(pf, state_path, report)
     report["paper_fill_classifications"] = fills_cls
-    try:
-        assert_no_live_idx_scrape(live_scrape_flag=False)
-        report["data_plane"] = describe_data_plane()
-        report["idx_enrichment_provider"] = get_default_provider().summary()
-        report["live_execution"] = False
-    except Exception as _e:
-        report["idx_enrichment_provider"] = {"error": type(_e).__name__}
     report["filled_trades"] = filled_trades
     # Explicit skip counters for daily audit trail
     report["skipped_existing_position"] = sum(1 for c in fills_cls if c == "SKIPPED_EXISTING_POSITION")
     report["skipped_cooldown"] = sum(1 for c in fills_cls if c == "SKIPPED_COOLDOWN")
     report["skipped_cash"] = sum(1 for c in fills_cls if c == "SKIPPED_CASH")
     report["fills_full"] = sum(1 for c in fills_cls if c in ("PAPER_FILLED", "FULL_FILL"))
-    # Symbols for Telegram: prefer new fills; else open positions (same-day re-run / ALREADY_APPLIED)
-    if not report.get("filled_trades"):
-        report["filled_trades"] = []
-    _syms_from_fills = [str(x.get("symbol") or "") for x in report["filled_trades"] if x.get("symbol")]
-    _syms_from_pos = sorted(str(s) for s in (pf.positions or {}) if s)
-    report["filled_symbols"] = _syms_from_fills or _syms_from_pos
-    # If no NEW fills but positions exist, treat held same-day as filled count for UX sync
-    if report["fills_full"] == 0 and _syms_from_pos:
-        report["fills_full"] = len(_syms_from_pos)
-        report["signals_received"] = max(int(report.get("signals_received") or 0), len(fills_cls) or len(_syms_from_pos))
     report["portfolio_heat_post"] = estimate_open_heat(pf.positions, equity=float(pf.equity(marks)))
     report["risk_skips"] = sum(1 for c in fills_cls if str(c).startswith("SKIPPED_RISK_"))
     report["fills_already_applied"] = sum(1 for c in fills_cls if c == "ALREADY_APPLIED")
@@ -610,7 +565,7 @@ def run(
         report["signals_notified"] = 0
         pf_sum = report.get("paper_portfolio") or {}
         _filled = list(report.get("filled_trades") or [])
-        _filled_syms = list(report.get("filled_symbols") or [str(x.get("symbol") or "") for x in _filled if x.get("symbol")])
+        _filled_syms = [str(x.get("symbol") or "") for x in _filled if x.get("symbol")]
         cycle = build_cycle_report(
             trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=None,
             exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
@@ -681,7 +636,7 @@ def run(
         if sig.tp1 <= 0 and sig.tp2 > 0 and sig.entry_reference > 0:
             sig.tp1 = sig.entry_reference + (sig.tp2 - sig.entry_reference) * 0.5
         _filled = list(report.get("filled_trades") or [])
-        _filled_syms = list(report.get("filled_symbols") or [str(x.get("symbol") or "") for x in _filled if x.get("symbol")])
+        _filled_syms = [str(x.get("symbol") or "") for x in _filled if x.get("symbol")]
         cycle = build_cycle_report(
             trading_date=trading_date, mode=mode, pf_summary=pf_sum, signal=sig,
             exits=report.get("exits_today") or [], marks=marks, model_version=model_version,
