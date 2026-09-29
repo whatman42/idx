@@ -1,7 +1,10 @@
-"""Crypto strategy namespace — independent of IDX promotion."""
+"""Crypto strategy namespace — independent of IDX promotion.
+
+Default signal path: OHLCV → Crypto Feature Engine → FeatureSnapshot → Scorer.
+"""
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -16,12 +19,40 @@ def crypto_sma20_signals(
     bars: pd.DataFrame,
     *,
     lookback: int = 20,
+    via_features: bool = True,
 ) -> list[dict[str, Any]]:
-    """Long when close > SMA(lookback). Research/ops paper path only."""
     assert_crypto_paper_only()
-    out: list[dict[str, Any]] = []
     if bars is None or bars.empty:
+        return []
+
+    if via_features:
+        from src.python.crypto.scorer import latest_long_signals
+
+        raw = latest_long_signals(bars)
+        out: list[dict[str, Any]] = []
+        for s in raw:
+            px = s.get("price")
+            if px is None:
+                continue
+            out.append(
+                {
+                    "symbol": str(s["symbol"]),
+                    "side": "BUY",
+                    "price": float(px),
+                    "confidence": float(s.get("confidence") or 0.0),
+                    "score": float(s.get("score") or 0.0),
+                    "strategy_id": STRATEGY_ID,
+                    "strategy_version": STRATEGY_VERSION,
+                    "market": MARKET,
+                    "quote_currency": "USDT",
+                    "timestamp": str(s["timestamp"]),
+                    "feature_path": True,
+                }
+            )
+        out.sort(key=lambda x: -float(x["confidence"]))
         return out
+
+    out = []
     df = bars.sort_values(["symbol", "timestamp"]).copy()
     for sym, g in df.groupby("symbol", sort=False):
         g = g.reset_index(drop=True)
@@ -46,6 +77,7 @@ def crypto_sma20_signals(
                     "market": MARKET,
                     "quote_currency": "USDT",
                     "timestamp": str(g.iloc[i]["timestamp"]),
+                    "feature_path": False,
                 }
             )
     out.sort(key=lambda x: -float(x["confidence"]))
