@@ -1,10 +1,7 @@
 """Crypto paper signal bot — isolated ops entry. No live orders. No IDX state.
 
-Coverage contract:
-  - Universe discovery = ALL provider instruments (full */USDT eligible set).
-  - Signal/OHLCV processing default = ALL eligible (max_symbols=0).
-  - CRYPTO_MAX_SYMBOLS > 0 is TEST/debug sampling only and is reported explicitly
-    as signal_coverage_mode=SAMPLED so paper results are not mistaken for 496/496.
+Coverage: full */USDT eligible by default (max_symbols=0).
+Execution: NEXT_BAR_OPEN — Signal_T intent only; fill at open_(T+1)×slippage.
 """
 from __future__ import annotations
 
@@ -19,9 +16,12 @@ import pandas as pd
 
 from src.python.crypto.config import (
     CRYPTO_ENABLED,
+    CRYPTO_EXECUTION_POLICY,
     CRYPTO_MAX_POSITIONS,
+    CRYPTO_SLIPPAGE_BPS,
     CRYPTO_STATE_PATH,
     assert_crypto_paper_only,
+    assert_execution_policy,
     crypto_sim_assumptions,
 )
 from src.python.crypto.paper_ledger import CryptoPaperLedger
@@ -29,6 +29,7 @@ from src.python.crypto.provider import BinancePublicProvider
 from src.python.crypto.risk import evaluate_crypto_entry
 from src.python.crypto.strategy import STRATEGY_ID, STRATEGY_VERSION, crypto_sma20_signals
 from src.python.crypto.universe import CryptoUniverseProvider
+from src.python.crypto.execution import intents_from_signals, resolve_next_bar_open_fill
 
 
 def _utc() -> str:
@@ -40,7 +41,6 @@ def _ledger_lock_path(state_path: str) -> Path:
 
 
 def _acquire_lock(state_path: str, *, timeout_sec: float = 60.0) -> Path:
-    """Best-effort exclusive lock for Actions concurrency (dispatch vs schedule)."""
     lock = _ledger_lock_path(state_path)
     lock.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.time() + timeout_sec
@@ -77,8 +77,8 @@ def run_crypto_paper(
     state_path: Optional[str] = None,
     provider: Optional[BinancePublicProvider] = None,
 ) -> dict[str, Any]:
-    """Discover full USDT universe and process eligible pairs for paper signals."""
     assert_crypto_paper_only()
+    assert_execution_policy()
     if not CRYPTO_ENABLED:
         return {"status": "DISABLED", "live_execution": False}
 
@@ -117,14 +117,21 @@ def run_crypto_paper(
             "universe": discovery.to_dict(),
         }
 
+    intents: list = []
+    blocked_no_next: list = []
+    fills: list = []
+    risk_skips = 0
+    signals: list = []
+    summary: dict = {}
+    ohlcv_ok = 0
+    ohlcv_errors: list = []
+
     path = state_path or CRYPTO_STATE_PATH
     lock = _acquire_lock(path)
     try:
         ledger = CryptoPaperLedger.new_session() if reset else CryptoPaperLedger.load(path)
 
         frames: list[pd.DataFrame] = []
-        ohlcv_errors: list[str] = []
-        ohlcv_ok = 0
         for inst in candidates:
             try:
                 bars = prov.fetch_ohlcv(
@@ -155,10 +162,10 @@ def run_crypto_paper(
                 ohlcv_ok += 1
             except Exception as e:
                 ohlcv_errors.append(f"{inst.symbol}:{type(e).__name__}")
-                if "429" in str(e) or "Rate" in type(e).__name__:
+                if "429" in str(e):
                     time.sleep(1.0)
 
-        signals: list[dict[str, Any]] = []
+        all_bars = pd.DataFrame()
         if frames:
             all_bars = pd.concat(frames, ignore_index=True)
             signals = crypto_sma20_signals(all_bars)
@@ -168,15 +175,23 @@ def run_crypto_paper(
             sym = str(f.iloc[-1]["symbol"])
             marks[sym] = float(f.iloc[-1]["close"])
 
-        fills: list[dict[str, Any]] = []
-        risk_skips = 0
-        for sig in signals:
+        intents = intents_from_signals(signals)
+        for intent in intents:
             if len(ledger.positions) >= CRYPTO_MAX_POSITIONS:
                 break
-            sym = sig["symbol"]
+            sym = intent.symbol
             if sym in ledger.positions:
                 continue
-            px = float(sig["price"])
+            resolved = resolve_next_bar_open_fill(
+                all_bars,
+                symbol=sym,
+                signal_timestamp=intent.signal_timestamp,
+                slippage_bps=CRYPTO_SLIPPAGE_BPS,
+            )
+            if resolved.status != "READY":
+                blocked_no_next.append(resolved.to_dict())
+                continue
+            px = float(resolved.fill_price)
             rd = evaluate_crypto_entry(
                 equity_usdt=ledger.equity(marks),
                 open_count=len(ledger.positions),
@@ -188,17 +203,24 @@ def run_crypto_paper(
                 continue
             notional = ledger.equity(marks) * rd.weight
             inst_meta = next((i for i in candidates if i.symbol == sym), None)
-            sid = f"crypto_{str(sig.get('timestamp', ''))[:10]}_{sym}_{STRATEGY_VERSION}"
+            sid = intent.signal_id or (
+                f"crypto_{str(intent.signal_timestamp)[:10]}_{sym}_{STRATEGY_VERSION}"
+            )
             fill = ledger.apply_buy(
                 symbol=sym,
                 price=px,
                 notional_usdt=notional,
                 signal_id=sid,
-                timestamp=sig.get("timestamp") or _utc(),
+                timestamp=resolved.fill_timestamp or _utc(),
                 min_qty=float(inst_meta.min_quantity) if inst_meta else 0.0,
                 min_notional=float(inst_meta.min_notional) if inst_meta else 0.0,
                 qty_precision=int(inst_meta.quantity_precision) if inst_meta else 8,
             )
+            fill["execution_policy"] = CRYPTO_EXECUTION_POLICY
+            fill["signal_timestamp"] = intent.signal_timestamp
+            fill["fill_timestamp"] = resolved.fill_timestamp
+            fill["fill_open"] = resolved.fill_open
+            fill["same_bar_fill"] = False
             fills.append(fill)
             if fill.get("status") == "CRYPTO_PAPER_FILL":
                 marks[sym] = float(fill["price"])
@@ -226,11 +248,15 @@ def run_crypto_paper(
         "ohlcv_error_count": len(ohlcv_errors),
         "signals": signals[:50],
         "signals_count": len(signals),
+        "intents_count": len(intents),
         "fills": fills,
         "fills_paper": sum(1 for f in fills if f.get("status") == "CRYPTO_PAPER_FILL"),
+        "blocked_no_next_bar": blocked_no_next[:50],
+        "blocked_no_next_count": len(blocked_no_next),
         "risk_skips": risk_skips,
         "portfolio": summary,
         "simulation": crypto_sim_assumptions(),
+        "execution_policy": CRYPTO_EXECUTION_POLICY,
         "endpoint_used": getattr(prov, "endpoint_used", ""),
         "endpoint_fallback_used": bool(getattr(prov, "endpoint_fallback_used", False)),
         "generated_at": _utc(),
@@ -241,8 +267,7 @@ def run_crypto_paper(
         from src.python.crypto.research_memory import get_crypto_research_memory
 
         mem = get_crypto_research_memory()
-        mem_result = mem.record_cycle(report)
-        report["research_memory"] = mem_result
+        report["research_memory"] = mem.record_cycle(report)
         if mem.status.value != "UNAVAILABLE":
             mem.record_strategy_version(
                 str(report.get("strategy_id") or "crypto_rule_sma20"),
@@ -267,7 +292,6 @@ def run_crypto_paper(
 
 
 def format_crypto_telegram(report: dict[str, Any]) -> str:
-    """Pesan Telegram [CRYPTO PAPER] — presentasi saja; ledger tetap SSOT."""
     uni = report.get("universe") or {}
     pf = report.get("portfolio") or {}
     status = str(report.get("status") or "")
@@ -309,9 +333,6 @@ def format_crypto_telegram(report: dict[str, Any]) -> str:
     ohlcv_ok = report.get("ohlcv_ok")
     ohlcv_att = report.get("ohlcv_attempted")
     data_line = f"{ohlcv_ok}/{ohlcv_att}" if ohlcv_ok is not None else str(n_elig)
-    cov = report.get("signal_coverage") or data_line
-    mode = report.get("signal_coverage_mode") or ""
-    pasar_extra = f" (sampel {cov})" if mode == "SAMPLED" else ""
 
     lines = [
         "[CRYPTO PAPER]",
@@ -320,12 +341,13 @@ def format_crypto_telegram(report: dict[str, Any]) -> str:
         "Mode: SIMULASI — tidak ada transaksi nyata",
         "Modal: USDT",
         f"Strategi: SMA20 ({report.get('strategy_id') or 'crypto_rule_sma20'})",
+        f"Eksekusi: {report.get('execution_policy') or 'NEXT_BAR_OPEN'} (sinyal T → open T+1)",
         "",
         "Pasar diperiksa:",
-        f"• {n_elig} aset USDT{pasar_extra}",
+        f"• {n_elig} aset USDT",
         f"• Data tersedia: {data_line}",
-        f"• Sinyal: {report.get('signals_count') or 0}",
-        f"• Posisi dibuka: {report.get('fills_paper') or len(pf.get('positions') or {})}",
+        f"• Sinyal/intent: {report.get('signals_count') or report.get('intents_count') or 0}",
+        f"• Posisi dibuka: {report.get('fills_paper') or 0}",
         "",
         "Portofolio:",
         f"• Kas: {_fmt_usdt(cash)} USDT",
@@ -340,7 +362,7 @@ def format_crypto_telegram(report: dict[str, Any]) -> str:
     if positions:
         for sym, row in positions.items():
             if isinstance(row, dict):
-                entry = float(row.get("avg_entry") or row.get("entry_price") or 0)
+                entry = float(row.get("avg_entry") or 0)
                 qty = float(row.get("qty") or 0)
                 tp = float(row.get("tp") or 0)
                 sl = float(row.get("sl") or 0)
@@ -355,22 +377,12 @@ def format_crypto_telegram(report: dict[str, Any]) -> str:
             lines.append(f"SL: {_fmt_px(sl) if sl else '—'}")
             lines.append(f"Jumlah: {_fmt_qty(qty)}")
             lines.append("")
-    else:
-        for f in report.get("fills") or []:
-            if f.get("status") != "CRYPTO_PAPER_FILL":
-                continue
-            lines.append(str(f.get("symbol")))
-            lines.append(f"Beli: {_fmt_px(f.get('price') or 0)}")
-            lines.append(f"TP: {_fmt_px(f.get('tp') or 0) if f.get('tp') else '—'}")
-            lines.append(f"SL: {_fmt_px(f.get('sl') or 0) if f.get('sl') else '—'}")
-            lines.append(f"Jumlah: {_fmt_qty(f.get('qty') or 0)}")
-            lines.append("")
-
     lines.extend(
         [
             "Catatan:",
             "TP = target harga untuk mengambil keuntungan.",
             "SL = batas harga untuk membatasi kerugian.",
+            "Fill = open bar berikutnya (bukan close bar sinyal).",
             "",
             "Semua transaksi hanya simulasi.",
             "Tidak ada order yang dikirim ke exchange.",
@@ -393,15 +405,14 @@ def maybe_send_telegram(text: str) -> str:
             json={"chat_id": chat, "text": text[:4000]},
             timeout=30.0,
         )
-        if r.status_code == 200:
-            return "SENT"
-        return f"HTTP_{r.status_code}"
+        return "SENT" if r.status_code == 200 else f"HTTP_{r.status_code}"
     except Exception as e:
         return f"ERROR:{type(e).__name__}"
 
 
 if __name__ == "__main__":
     assert_crypto_paper_only()
+    assert_execution_policy()
     reset = os.getenv("CRYPTO_RESET", "").strip() in ("1", "true", "TRUE")
     max_sym = int(os.getenv("CRYPTO_MAX_SYMBOLS", "0"))
     rep = run_crypto_paper(max_symbols=max_sym, reset=reset)
@@ -419,17 +430,13 @@ if __name__ == "__main__":
                 for k in (
                     "status",
                     "live_execution",
-                    "base_currency",
-                    "signal_coverage_mode",
+                    "execution_policy",
                     "signal_coverage",
-                    "ohlcv_ok",
-                    "ohlcv_attempted",
                     "signals_count",
+                    "intents_count",
                     "fills_paper",
+                    "blocked_no_next_count",
                     "telegram_status",
-                    "endpoint_used",
-                    "research_memory",
-                    "strategy_status_reason",
                 )
             },
             indent=2,
