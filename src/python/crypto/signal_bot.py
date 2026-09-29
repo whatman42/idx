@@ -235,31 +235,115 @@ def run_crypto_paper(
 
 
 def format_crypto_telegram(report: dict[str, Any]) -> str:
-    """Presentation only — ledger remains SSOT."""
+    """Pesan Telegram [CRYPTO PAPER] — presentasi saja; ledger tetap SSOT."""
     uni = report.get("universe") or {}
     pf = report.get("portfolio") or {}
+    status = str(report.get("status") or "")
+    status_id = "BERHASIL" if status.upper() in ("SUCCESS", "OK", "BERHASIL") else status
+
+    def _fmt_px(x: float) -> str:
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return str(x)
+        if v >= 100:
+            return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        if v >= 1:
+            return f"{v:,.4f}".rstrip("0").rstrip(".").replace(".", ",")
+        s = f"{v:.10f}".rstrip("0").rstrip(".")
+        return s.replace(".", ",")
+
+    def _fmt_qty(x: float) -> str:
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return str(x)
+        if abs(v - round(v)) < 1e-9:
+            return f"{int(round(v)):,}".replace(",", ".")
+        s = f"{v:,.6f}".rstrip("0").rstrip(".")
+        return s.replace(",", "X").replace(".", ",").replace("X", ".")
+
+    def _fmt_usdt(x: float) -> str:
+        try:
+            v = float(x)
+        except (TypeError, ValueError):
+            return str(x)
+        return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    equity = float(pf.get("equity") or 0)
+    cash = float(pf.get("cash") or 0)
+    mv = float(pf.get("market_value") or (equity - cash))
+    n_elig = uni.get("eligible_count") or report.get("ohlcv_attempted") or 0
+    ohlcv_ok = report.get("ohlcv_ok")
+    ohlcv_att = report.get("ohlcv_attempted")
+    data_line = f"{ohlcv_ok}/{ohlcv_att}" if ohlcv_ok is not None else str(n_elig)
+    cov = report.get("signal_coverage") or data_line
+    mode = report.get("signal_coverage_mode") or ""
+    pasar_extra = f" (sampel {cov})" if mode == "SAMPLED" else ""
+
     lines = [
         "[CRYPTO PAPER]",
-        f"status: {report.get('status')}",
-        "live_execution: false",
-        "base: USDT",
-        f"strategy: {report.get('strategy_id')}@{report.get('strategy_version')}",
-        f"universe discovered: {uni.get('discovered_count')}",
-        f"eligible USDT: {uni.get('eligible_count')}",
-        f"blocked: {uni.get('blocked_count')}",
-        f"endpoint: {report.get('endpoint_used') or uni.get('endpoint_used')}",
-        f"signal_coverage: {report.get('signal_coverage')} ({report.get('signal_coverage_mode')})",
-        f"ohlcv_ok: {report.get('ohlcv_ok')}/{report.get('ohlcv_attempted')}",
-        f"signals: {report.get('signals_count')}",
-        f"fills: {report.get('fills_paper')}",
-        f"equity_USDT: {pf.get('equity')}",
-        f"cash_USDT: {pf.get('cash')}",
-        f"positions: {len(pf.get('positions') or {})}",
+        "",
+        f"Status: {status_id}",
+        "Mode: SIMULASI — tidak ada transaksi nyata",
+        "Modal: USDT",
+        f"Strategi: SMA20 ({report.get('strategy_id') or 'crypto_rule_sma20'})",
+        "",
+        "Pasar diperiksa:",
+        f"• {n_elig} aset USDT{pasar_extra}",
+        f"• Data tersedia: {data_line}",
+        f"• Sinyal: {report.get('signals_count') or 0}",
+        f"• Posisi dibuka: {report.get('fills_paper') or len(pf.get('positions') or {})}",
+        "",
+        "Portofolio:",
+        f"• Kas: {_fmt_usdt(cash)} USDT",
+        f"• Nilai posisi: {_fmt_usdt(mv)} USDT",
+        f"• Total aset: {_fmt_usdt(equity)} USDT",
+        "",
+        "POSISI SIMULASI",
+        "",
     ]
-    for f in report.get("fills") or []:
-        if f.get("status") == "CRYPTO_PAPER_FILL":
-            lines.append(f"  FILL {f.get('symbol')} qty={f.get('qty')} @ {f.get('price')}")
-    lines.append("Broker: tidak dikirim — NO LIVE EXECUTION")
+
+    positions = pf.get("positions") or {}
+    if positions:
+        for sym, row in positions.items():
+            if isinstance(row, dict):
+                entry = float(row.get("avg_entry") or row.get("entry_price") or 0)
+                qty = float(row.get("qty") or 0)
+                tp = float(row.get("tp") or 0)
+                sl = float(row.get("sl") or 0)
+            else:
+                entry = float(getattr(row, "avg_entry", 0) or 0)
+                qty = float(getattr(row, "qty", 0) or 0)
+                tp = float(getattr(row, "tp", 0) or 0)
+                sl = float(getattr(row, "sl", 0) or 0)
+            lines.append(str(sym))
+            lines.append(f"Beli: {_fmt_px(entry)}")
+            lines.append(f"TP: {_fmt_px(tp) if tp else '—'}")
+            lines.append(f"SL: {_fmt_px(sl) if sl else '—'}")
+            lines.append(f"Jumlah: {_fmt_qty(qty)}")
+            lines.append("")
+    else:
+        for f in report.get("fills") or []:
+            if f.get("status") != "CRYPTO_PAPER_FILL":
+                continue
+            lines.append(str(f.get("symbol")))
+            lines.append(f"Beli: {_fmt_px(f.get('price') or 0)}")
+            lines.append(f"TP: {_fmt_px(f.get('tp') or 0) if f.get('tp') else '—'}")
+            lines.append(f"SL: {_fmt_px(f.get('sl') or 0) if f.get('sl') else '—'}")
+            lines.append(f"Jumlah: {_fmt_qty(f.get('qty') or 0)}")
+            lines.append("")
+
+    lines.extend(
+        [
+            "Catatan:",
+            "TP = target harga untuk mengambil keuntungan.",
+            "SL = batas harga untuk membatasi kerugian.",
+            "",
+            "Semua transaksi hanya simulasi.",
+            "Tidak ada order yang dikirim ke exchange.",
+        ]
+    )
     return "\n".join(lines)
 
 
