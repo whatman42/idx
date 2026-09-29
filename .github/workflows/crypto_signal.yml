@@ -1,0 +1,66 @@
+# CRYPTO PAPER plane — isolated from IDX equities.
+# PAPER ONLY. No exchange orders. Dynamic */USDT discovery via Binance public REST.
+# Schedule: daily 00:00 UTC (research/ops batch — not 24/7 daemon).
+
+name: Crypto Paper Signal
+
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      reset_portfolio:
+        description: "Reset crypto paper ledger (new session)"
+        required: true
+        default: false
+        type: boolean
+      max_symbols:
+        description: "Max eligible symbols to fetch OHLCV (universe discovery still full)"
+        required: false
+        default: "40"
+
+concurrency:
+  group: crypto-paper-ledger
+  cancel-in-progress: false
+
+jobs:
+  crypto-paper:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Safety — refuse live execution
+        run: |
+          python - <<'PY'
+          import os
+          os.environ["CRYPTO_LIVE_EXECUTION"] = os.environ.get("CRYPTO_LIVE_EXECUTION", "false")
+          from src.python.crypto.config import assert_crypto_paper_only, CRYPTO_LIVE_EXECUTION
+          assert CRYPTO_LIVE_EXECUTION is False
+          assert_crypto_paper_only()
+          print("crypto_paper_only=PASS")
+          PY
+      - name: Run crypto paper bot
+        env:
+          CRYPTO_RESET: ${{ github.event.inputs.reset_portfolio == 'true' && '1' || '0' }}
+          CRYPTO_MAX_SYMBOLS: ${{ github.event.inputs.max_symbols || '40' }}
+          CRYPTO_STATE_PATH: state/crypto/paper_ledger.json
+        run: |
+          mkdir -p state/crypto artifacts/crypto
+          python -m src.python.crypto.signal_bot
+      - name: Upload crypto report
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-ops-report-${{ github.run_id }}
+          path: |
+            artifacts/crypto/
+            state/crypto/
+          if-no-files-found: warn
+          retention-days: 30
