@@ -1,10 +1,8 @@
 """Crypto Strategy Evaluator — RESEARCH PLANE ONLY.
 
-OHLCV → signal → paper sim with crypto fee/slippage → EvidencePackage-like dict
-→ CryptoPromotionGate
-
-Never writes CryptoPaperLedger ops state. Never enables LIVE_EXECUTION.
-Base: USDT continuous quantity (no BEI lot).
+Default signal path uses Crypto Feature Engine + FeatureSnapshot.
+Never writes CryptoPaperLedger ops. Never enables LIVE_EXECUTION.
+Base: USDT continuous quantity.
 """
 from __future__ import annotations
 
@@ -58,6 +56,21 @@ def _fee(notional: float, bps: float) -> float:
     return abs(float(notional)) * bps / 10_000.0
 
 
+def _feature_signal_fn(bars: pd.DataFrame) -> pd.DataFrame:
+    from src.python.crypto.features import build_crypto_features
+    from src.python.crypto.scorer import CryptoSma20Scorer
+
+    res = build_crypto_features(bars)
+    if res.df.empty:
+        return pd.DataFrame(columns=["timestamp", "symbol", "side", "confidence", "close"])
+    scored = CryptoSma20Scorer().score_frame(res.df)
+    if scored.empty:
+        return scored
+    if "price" in scored.columns and "close" not in scored.columns:
+        scored = scored.rename(columns={"price": "close"})
+    return scored
+
+
 def _sma_signal(bars: pd.DataFrame, lookback: int = 20) -> pd.DataFrame:
     rows: list[dict] = []
     if bars is None or bars.empty:
@@ -93,7 +106,7 @@ def backtest_crypto(
 ) -> dict[str, Any]:
     assert_crypto_paper_only()
     cfg = cfg or CryptoEvaluatorConfig()
-    signal_fn = signal_fn or (lambda b: _sma_signal(b, 20))
+    signal_fn = signal_fn or _feature_signal_fn
     if bars is None or bars.empty:
         return _empty_result(cfg, reason="NO_BARS")
 
@@ -148,12 +161,10 @@ def backtest_crypto(
             if lo <= open_pos[sym]["sl"]:
                 exit_px = _sell_px(open_pos[sym]["sl"], cfg.slippage_bps)
                 exit_reason = "SL"
-                exit_i = j
                 break
             if hi >= open_pos[sym]["tp"]:
                 exit_px = _sell_px(open_pos[sym]["tp"], cfg.slippage_bps)
                 exit_reason = "TP"
-                exit_i = j
                 break
         if exit_px is None:
             exit_px = _sell_px(float(g.iloc[exit_i]["close"]), cfg.slippage_bps)
@@ -195,6 +206,7 @@ def backtest_crypto(
         "trades": trades[:200],
         "config": asdict(cfg),
         "hard_reject": _hard_reject(n, expectancy, dd, cfg),
+        "signal_path": "feature_snapshot",
     }
 
 
@@ -239,6 +251,7 @@ def walk_forward_crypto(
         "windows": windows,
         "hard_reject": _hard_reject(n_tr, exp, mdd, cfg),
         "config": asdict(cfg),
+        "signal_path": "feature_snapshot",
     }
 
 
@@ -271,6 +284,7 @@ def build_evidence_package(
         "base_currency": "USDT",
         "live_execution": False,
         "origin": "CRYPTO_EVALUATOR",
+        "signal_path": backtest.get("signal_path", "feature_snapshot"),
     }
 
 
@@ -299,4 +313,5 @@ def _empty_result(cfg: CryptoEvaluatorConfig, reason: str) -> dict[str, Any]:
         "trades": [],
         "hard_reject": [reason],
         "config": asdict(cfg),
+        "signal_path": "feature_snapshot",
     }
