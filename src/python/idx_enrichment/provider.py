@@ -22,6 +22,7 @@ from src.python.idx_enrichment.models import (
     CorporateActionEvent,
     CorporateActionType,
     LiquiditySnapshot,
+    Provenance,
     SectorSnapshot,
 )
 
@@ -79,6 +80,18 @@ class IdxEnrichmentProvider:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "IdxEnrichmentProvider":
+        def _prov(row: dict, sym: str = "") -> Provenance:
+            return Provenance(
+                source=str(row.get("source") or raw.get("source") or "idx_cache"),
+                as_of=str(row.get("as_of") or raw.get("as_of") or ""),
+                retrieved_at=str(row.get("retrieved_at") or ""),
+                effective_from=str(row.get("effective_from") or row.get("ex_date") or row.get("effective_date") or ""),
+                effective_to=str(row.get("effective_to") or ""),
+                version=str(row.get("version") or "1"),
+                symbol=str(sym or row.get("symbol") or "").upper(),
+                status=str(row.get("status") or "OK"),
+            )
+
         cas: list[CorporateActionEvent] = []
         for row in raw.get("corporate_actions") or []:
             if not isinstance(row, dict):
@@ -87,9 +100,10 @@ class IdxEnrichmentProvider:
                 at = CorporateActionType(str(row.get("action_type") or "OTHER").upper())
             except ValueError:
                 at = CorporateActionType.OTHER
+            sym = str(row.get("symbol") or "").upper()
             cas.append(
                 CorporateActionEvent(
-                    symbol=str(row.get("symbol") or "").upper(),
+                    symbol=sym,
                     action_type=at,
                     announcement_date=str(row.get("announcement_date") or ""),
                     cum_date=str(row.get("cum_date") or ""),
@@ -98,9 +112,7 @@ class IdxEnrichmentProvider:
                     payment_date=str(row.get("payment_date") or ""),
                     effective_date=str(row.get("effective_date") or ""),
                     description=str(row.get("description") or ""),
-                    source=str(row.get("source") or "idx_cache"),
-                    provenance=str(row.get("provenance") or "local_cache"),
-                    as_of=str(row.get("as_of") or raw.get("as_of") or ""),
+                    provenance=_prov(row, sym),
                 )
             )
         liq: dict[str, LiquiditySnapshot] = {}
@@ -116,8 +128,7 @@ class IdxEnrichmentProvider:
                 trading_frequency=float(row.get("trading_frequency") or 0),
                 trading_days=int(row.get("trading_days") or 0),
                 market_cap=float(row.get("market_cap") or 0),
-                source=str(row.get("source") or "idx_cache"),
-                provenance=str(row.get("provenance") or "local_cache"),
+                provenance=_prov(row, s),
             )
         sec: dict[str, SectorSnapshot] = {}
         for sym, row in (raw.get("sectors") or {}).items():
@@ -130,8 +141,7 @@ class IdxEnrichmentProvider:
                 subsector=str(row.get("subsector") or ""),
                 industry=str(row.get("industry") or ""),
                 as_of=str(row.get("as_of") or raw.get("as_of") or ""),
-                source=str(row.get("source") or "idx_cache"),
-                provenance=str(row.get("provenance") or "local_cache"),
+                provenance=_prov(row, s),
             )
         return cls(
             corporate_actions=cas,
