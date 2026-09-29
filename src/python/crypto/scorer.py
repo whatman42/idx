@@ -62,6 +62,90 @@ class CryptoSma20Scorer:
         return pd.DataFrame(rows)
 
 
+class CryptoMomentumShadowScorer:
+    """RESEARCH / SHADOW only — not paper-eligible by default.
+
+    Long when ret_5 > 0 and sma_dist_20 > 0; soft-skip extreme vol_z.
+    """
+
+    strategy_id = "crypto_momentum_shadow"
+    strategy_version = "crypto_mom_v0"
+    plane = "SHADOW"
+    required_features: Sequence[str] = ("ret_5", "sma_dist_20", "close")
+
+    def __init__(self) -> None:
+        assert_required_registered(list(self.required_features))
+
+    def score_row(self, snap: CryptoFeatureSnapshot) -> dict[str, Any]:
+        snap.require(self.required_features)
+        ret5 = snap.get("ret_5")
+        dist = snap.get("sma_dist_20")
+        volz = snap.get("vol_z_20")
+        if volz == volz and abs(volz) > 3.0:
+            side = 0
+            score = 0.0
+        elif ret5 == ret5 and dist == dist and ret5 > 0 and dist > 0:
+            side = 1
+            score = float(ret5) + float(dist)
+        else:
+            side = 0
+            score = float(ret5) if ret5 == ret5 else 0.0
+        conf = min(0.99, 0.5 + abs(score) * 3) if side else 0.0
+        return {
+            "timestamp": snap.timestamp,
+            "symbol": snap.symbol,
+            "side": side,
+            "confidence": float(conf),
+            "score": float(score),
+            "price": snap.get("close"),
+            "market": "CRYPTO",
+            "quote_currency": "USDT",
+            "strategy_id": self.strategy_id,
+            "plane": self.plane,
+        }
+
+    def score_frame(self, feat_df: pd.DataFrame) -> pd.DataFrame:
+        assert_no_forbidden_feature_names(
+            [c for c in feat_df.columns if c not in ("timestamp", "symbol")],
+            context="shadow_scorer_frame",
+        )
+        rows: list[dict] = []
+        for _, row in feat_df.iterrows():
+            feats = {
+                c: float(row[c]) if c in row.index and pd.notna(row[c]) else float("nan")
+                for c in FEATURE_COLS
+                if c in feat_df.columns
+            }
+            snap = CryptoFeatureSnapshot(
+                timestamp=str(row["timestamp"]),
+                symbol=str(row["symbol"]),
+                features=feats,
+            )
+            rows.append(self.score_row(snap))
+        if not rows:
+            return pd.DataFrame(
+                columns=["timestamp", "symbol", "side", "confidence", "score", "price"]
+            )
+        return pd.DataFrame(rows)
+
+
+_SCORERS = {
+    "crypto_rule_sma20": CryptoSma20Scorer,
+    "crypto_momentum_shadow": CryptoMomentumShadowScorer,
+}
+
+
+def get_crypto_scorer(strategy_id: str):
+    cls = _SCORERS.get(strategy_id)
+    if cls is None:
+        raise KeyError(f"unknown crypto scorer: {strategy_id}")
+    return cls()
+
+
+def is_shadow_scorer(strategy_id: str) -> bool:
+    return strategy_id.endswith("_shadow") or strategy_id == "crypto_momentum_shadow"
+
+
 def crypto_signal_fn_from_features(bars: pd.DataFrame) -> list[dict[str, Any]]:
     res = build_crypto_features(bars)
     if res.df.empty:
