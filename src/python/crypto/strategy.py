@@ -1,6 +1,6 @@
 """Crypto strategy namespace — independent of IDX promotion.
 
-Default signal path: OHLCV → Crypto Feature Engine → FeatureSnapshot → Scorer.
+Default: FeatureSnapshot path; ops uses executable signals (T with T+1 available).
 """
 from __future__ import annotations
 
@@ -26,9 +26,9 @@ def crypto_sma20_signals(
         return []
 
     if via_features:
-        from src.python.crypto.scorer import latest_long_signals
+        from src.python.crypto.scorer import latest_executable_long_signals
 
-        raw = latest_long_signals(bars)
+        raw = latest_executable_long_signals(bars)
         out: list[dict[str, Any]] = []
         for s in raw:
             px = s.get("price")
@@ -47,6 +47,7 @@ def crypto_sma20_signals(
                     "quote_currency": "USDT",
                     "timestamp": str(s["timestamp"]),
                     "feature_path": True,
+                    "execution_policy": "NEXT_BAR_OPEN",
                 }
             )
         out.sort(key=lambda x: -float(x["confidence"]))
@@ -56,29 +57,32 @@ def crypto_sma20_signals(
     df = bars.sort_values(["symbol", "timestamp"]).copy()
     for sym, g in df.groupby("symbol", sort=False):
         g = g.reset_index(drop=True)
-        if len(g) < lookback + 1:
+        if len(g) < lookback + 2:
             continue
         close = g["close"].astype(float)
         sma = close.rolling(lookback, min_periods=lookback).mean()
-        i = len(g) - 1
-        if pd.isna(sma.iloc[i]):
-            continue
-        if float(close.iloc[i]) > float(sma.iloc[i]):
-            dist = float(close.iloc[i] / sma.iloc[i] - 1.0)
-            conf = min(0.99, 0.5 + abs(dist) * 5)
-            out.append(
-                {
-                    "symbol": str(sym),
-                    "side": "BUY",
-                    "price": float(close.iloc[i]),
-                    "confidence": conf,
-                    "strategy_id": STRATEGY_ID,
-                    "strategy_version": STRATEGY_VERSION,
-                    "market": MARKET,
-                    "quote_currency": "USDT",
-                    "timestamp": str(g.iloc[i]["timestamp"]),
-                    "feature_path": False,
-                }
-            )
+        # Prefer last index that still has a next bar
+        for i in range(len(g) - 2, lookback - 1, -1):
+            if pd.isna(sma.iloc[i]):
+                continue
+            if float(close.iloc[i]) > float(sma.iloc[i]):
+                dist = float(close.iloc[i] / sma.iloc[i] - 1.0)
+                conf = min(0.99, 0.5 + abs(dist) * 5)
+                out.append(
+                    {
+                        "symbol": str(sym),
+                        "side": "BUY",
+                        "price": float(close.iloc[i]),
+                        "confidence": conf,
+                        "strategy_id": STRATEGY_ID,
+                        "strategy_version": STRATEGY_VERSION,
+                        "market": MARKET,
+                        "quote_currency": "USDT",
+                        "timestamp": str(g.iloc[i]["timestamp"]),
+                        "feature_path": False,
+                        "execution_policy": "NEXT_BAR_OPEN",
+                    }
+                )
+                break
     out.sort(key=lambda x: -float(x["confidence"]))
     return out
