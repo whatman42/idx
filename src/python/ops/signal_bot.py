@@ -21,6 +21,13 @@ from src.python.ops.telegram_format import notification_id
 from src.python.ops.freshness import freshness_gate
 from src.python.ops.execution_authority import default_continuous_provider
 from src.python.market_structure import ExecutionGate, PriceRules
+from src.python.idx_enrichment import (
+    get_default_provider,
+    pre_entry_enrichment_gates,
+    decisions_summary,
+    EnrichmentPolicy,
+)
+from src.python.data_plane import describe_data_plane, assert_no_live_idx_scrape
 from src.python.ops.paper_portfolio import (
     DEFAULT_INITIAL_CAPITAL, DEFAULT_LOT_SIZE, PaperPortfolioStore, apply_long_entry,
     mark_to_market, new_session, summary as portfolio_summary, paper_reset_scope,
@@ -447,6 +454,27 @@ def run(
             stop_pct = max(0.0, (px - float(s["sl"])) / px)
         if stop_pct <= 0:
             stop_pct = 0.03
+        # IDX reference enrichment (not strategy authority): CA → Liquidity → Sector
+        _idx_ok, _idx_decs = pre_entry_enrichment_gates(
+            sym, trading_date,
+            proposed_weight=float(ENTRY_WEIGHT),
+            open_positions={k: (v if isinstance(v, dict) else {}) for k, v in (pf.positions or {}).items()},
+            equity=float(pf.equity(marks)),
+            provider=get_default_provider(),
+            policy=EnrichmentPolicy.from_env(),
+        )
+        if not _idx_ok:
+            _blk = next((d for d in _idx_decs if not d.allow), _idx_decs[-1] if _idx_decs else None)
+            _reason = (_blk.reason if _blk else 'IDX_ENRICHMENT_BLOCK')
+            fills_cls.append(f'SKIPPED_IDX_{_reason}')
+            s.update({
+                'fill_status': f'SKIPPED_IDX_{_reason}',
+                'why': s.get('why', '') + f' | idx_enrichment={_reason}',
+                'idx_enrichment': decisions_summary(_idx_decs),
+            })
+            continue
+        s['idx_enrichment'] = decisions_summary(_idx_decs)
+
         gate = gate_new_entry(
             equity=float(pf.equity(marks)),
             cash=float(pf.cash),
@@ -525,6 +553,13 @@ def run(
     # Phase-1 research-only: paper fills → episodes (fail-safe; never mutates ledger/execution)
     research_ingest_paper_trades(pf, state_path, report)
     report["paper_fill_classifications"] = fills_cls
+    try:
+        assert_no_live_idx_scrape(live_scrape_flag=False)
+        report["data_plane"] = describe_data_plane()
+        report["idx_enrichment_provider"] = get_default_provider().summary()
+        report["live_execution"] = False
+    except Exception as _e:
+        report["idx_enrichment_provider"] = {"error": type(_e).__name__}
     report["filled_trades"] = filled_trades
     # Explicit skip counters for daily audit trail
     report["skipped_existing_position"] = sum(1 for c in fills_cls if c == "SKIPPED_EXISTING_POSITION")
