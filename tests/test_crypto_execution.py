@@ -102,3 +102,51 @@ def test_executable_signals_require_t_plus_1():
         )
         assert r.status == "READY"
         assert r.fill_timestamp != s["timestamp"]
+
+
+def test_evaluator_uses_shared_resolver_same_price():
+    from src.python.crypto.evaluator import CryptoEvaluatorConfig, backtest_crypto
+
+    rows = []
+    px = 100.0
+    for i in range(40):
+        px *= 1.02
+        rows.append(
+            {
+                "timestamp": f"2026-07-01T{i:02d}:00:00+00:00",
+                "symbol": "BTC/USDT",
+                "open": px * 0.999,
+                "high": px * 1.01,
+                "low": px * 0.99,
+                "close": px,
+                "volume": 10.0,
+            }
+        )
+    bars = pd.DataFrame(rows)
+
+    def sig_fn(b: pd.DataFrame) -> pd.DataFrame:
+        return pd.DataFrame(
+            [
+                {
+                    "timestamp": bars.iloc[20]["timestamp"],
+                    "symbol": "BTC/USDT",
+                    "side": 1,
+                    "confidence": 0.9,
+                    "close": float(bars.iloc[20]["close"]),
+                }
+            ]
+        )
+
+    r = resolve_next_bar_open_fill(
+        bars,
+        symbol="BTC/USDT",
+        signal_timestamp=str(bars.iloc[20]["timestamp"]),
+        slippage_bps=5.0,
+    )
+    assert r.status == "READY"
+    cfg = CryptoEvaluatorConfig(slippage_bps=5.0, weight=0.1, hold_bars=3, min_trades=0)
+    bt = backtest_crypto(bars, cfg=cfg, signal_fn=sig_fn)
+    assert bt.get("execution_resolver") == "crypto.execution.resolve_next_bar_open_fill"
+    assert bt.get("execution_policy") == "NEXT_BAR_OPEN"
+    if bt["n_trades"] >= 1:
+        assert bt["trades"][0]["entry"] == pytest.approx(r.fill_price)
