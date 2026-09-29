@@ -1,6 +1,7 @@
 """Crypto Strategy Evaluator — RESEARCH PLANE ONLY.
 
 Default signal path uses Crypto Feature Engine + FeatureSnapshot.
+Entry fills use crypto.execution.resolve_next_bar_open_fill (same as paper).
 Never writes CryptoPaperLedger ops. Never enables LIVE_EXECUTION.
 Base: USDT continuous quantity.
 """
@@ -13,13 +14,16 @@ import numpy as np
 import pandas as pd
 
 from src.python.crypto.config import (
+    CRYPTO_EXECUTION_POLICY,
     CRYPTO_FEE_BUY_BPS,
     CRYPTO_FEE_SELL_BPS,
     CRYPTO_SLIPPAGE_BPS,
     CRYPTO_SL_PCT,
     CRYPTO_TP_PCT,
     assert_crypto_paper_only,
+    assert_execution_policy,
 )
+from src.python.crypto.execution import resolve_next_bar_open_fill
 
 PLANE = "CRYPTO_RESEARCH"
 LIVE_EXECUTION = False
@@ -42,10 +46,7 @@ class CryptoEvaluatorConfig:
     wf_test_bars: int = 15
     wf_step_bars: int = 15
     timing: str = "signal_T_execute_next_open"
-
-
-def _buy_px(px: float, slip_bps: float) -> float:
-    return float(px) * (1.0 + slip_bps / 10_000.0)
+    execution_policy: str = CRYPTO_EXECUTION_POLICY
 
 
 def _sell_px(px: float, slip_bps: float) -> float:
@@ -105,6 +106,7 @@ def backtest_crypto(
     signal_fn: Optional[Callable[[pd.DataFrame], pd.DataFrame]] = None,
 ) -> dict[str, Any]:
     assert_crypto_paper_only()
+    assert_execution_policy()
     cfg = cfg or CryptoEvaluatorConfig()
     signal_fn = signal_fn or _feature_signal_fn
     if bars is None or bars.empty:
@@ -129,14 +131,26 @@ def backtest_crypto(
         if g is None or len(g) < 2 or sym in open_pos:
             continue
         ts = srow["timestamp"]
-        idxs = g.index[g["timestamp"] == ts].tolist()
-        if not idxs:
+        resolved = resolve_next_bar_open_fill(
+            df,
+            symbol=sym,
+            signal_timestamp=str(ts),
+            slippage_bps=cfg.slippage_bps,
+        )
+        if resolved.status != "READY":
             continue
-        i = int(idxs[0])
-        if i + 1 >= len(g):
-            continue
-        entry_row = g.iloc[i + 1]
-        entry_px = _buy_px(float(entry_row["open"]), cfg.slippage_bps)
+        entry_px = float(resolved.fill_price)
+        fill_ts = pd.to_datetime(resolved.fill_timestamp, utc=True, errors="coerce")
+        g_ts = pd.to_datetime(g["timestamp"], utc=True, errors="coerce")
+        fill_idxs = g.index[g_ts == fill_ts].tolist()
+        if not fill_idxs:
+            sig_ts = pd.to_datetime(ts, utc=True, errors="coerce")
+            later = g.index[g_ts > sig_ts].tolist()
+            if not later:
+                continue
+            fill_i = int(later[0])
+        else:
+            fill_i = int(fill_idxs[0])
         notional = cash * cfg.weight
         if notional <= 0 or entry_px <= 0:
             continue
@@ -151,11 +165,13 @@ def backtest_crypto(
             "entry_fee": entry_fee,
             "tp": entry_px * (1.0 + cfg.tp_pct),
             "sl": entry_px * (1.0 - cfg.sl_pct),
+            "fill_i": fill_i,
+            "execution_policy": resolved.execution_policy,
         }
-        exit_i = min(i + 1 + cfg.hold_bars, len(g) - 1)
+        exit_i = min(fill_i + cfg.hold_bars, len(g) - 1)
         exit_px = None
         exit_reason = "TIME"
-        for j in range(i + 2, exit_i + 1):
+        for j in range(fill_i + 1, exit_i + 1):
             hi = float(g.iloc[j]["high"]) if "high" in g.columns else float(g.iloc[j]["close"])
             lo = float(g.iloc[j]["low"]) if "low" in g.columns else float(g.iloc[j]["close"])
             if lo <= open_pos[sym]["sl"]:
@@ -173,7 +189,16 @@ def backtest_crypto(
         sell_fee = _fee(sell_notional, cfg.fee_sell_bps)
         cash += sell_notional - sell_fee
         pnl = (exit_px - pos["entry_px"]) * pos["qty"] - pos["entry_fee"] - sell_fee
-        trades.append({"symbol": sym, "entry": pos["entry_px"], "exit": exit_px, "qty": pos["qty"], "pnl": pnl, "reason": exit_reason})
+        trades.append(
+            {
+                "symbol": sym,
+                "entry": pos["entry_px"],
+                "exit": exit_px,
+                "qty": pos["qty"],
+                "pnl": pnl,
+                "reason": exit_reason,
+            }
+        )
         equity_curve.append(cash)
 
     for sym, pos in list(open_pos.items()):
@@ -183,7 +208,16 @@ def backtest_crypto(
         sell_fee = _fee(sell_notional, cfg.fee_sell_bps)
         cash += sell_notional - sell_fee
         pnl = (exit_px - pos["entry_px"]) * pos["qty"] - pos["entry_fee"] - sell_fee
-        trades.append({"symbol": sym, "entry": pos["entry_px"], "exit": exit_px, "qty": pos["qty"], "pnl": pnl, "reason": "EOD"})
+        trades.append(
+            {
+                "symbol": sym,
+                "entry": pos["entry_px"],
+                "exit": exit_px,
+                "qty": pos["qty"],
+                "pnl": pnl,
+                "reason": "EOD",
+            }
+        )
         equity_curve.append(cash)
 
     pnls = [t["pnl"] for t in trades]
@@ -207,6 +241,8 @@ def backtest_crypto(
         "config": asdict(cfg),
         "hard_reject": _hard_reject(n, expectancy, dd, cfg),
         "signal_path": "feature_snapshot",
+        "execution_policy": CRYPTO_EXECUTION_POLICY,
+        "execution_resolver": "crypto.execution.resolve_next_bar_open_fill",
     }
 
 
@@ -228,14 +264,16 @@ def walk_forward_crypto(
         test_ts = set(ts[i + cfg.wf_train_bars : i + cfg.wf_train_bars + cfg.wf_test_bars])
         window_bars = df[df["timestamp"].isin(train_ts | test_ts)]
         res = backtest_crypto(window_bars, cfg=cfg)
-        windows.append({
-            "train_start": str(ts[i]),
-            "test_start": str(ts[i + cfg.wf_train_bars]),
-            "n_trades": res["n_trades"],
-            "expectancy": res["expectancy"],
-            "max_drawdown": res["max_drawdown"],
-            "total_pnl": res["total_pnl"],
-        })
+        windows.append(
+            {
+                "train_start": str(ts[i]),
+                "test_start": str(ts[i + cfg.wf_train_bars]),
+                "n_trades": res["n_trades"],
+                "expectancy": res["expectancy"],
+                "max_drawdown": res["max_drawdown"],
+                "total_pnl": res["total_pnl"],
+            }
+        )
         i += cfg.wf_step_bars
     n_tr = sum(w["n_trades"] for w in windows)
     exp = float(np.mean([w["expectancy"] for w in windows])) if windows else 0.0
@@ -252,6 +290,8 @@ def walk_forward_crypto(
         "hard_reject": _hard_reject(n_tr, exp, mdd, cfg),
         "config": asdict(cfg),
         "signal_path": "feature_snapshot",
+        "execution_policy": CRYPTO_EXECUTION_POLICY,
+        "execution_resolver": "crypto.execution.resolve_next_bar_open_fill",
     }
 
 
@@ -285,6 +325,7 @@ def build_evidence_package(
         "live_execution": False,
         "origin": "CRYPTO_EVALUATOR",
         "signal_path": backtest.get("signal_path", "feature_snapshot"),
+        "execution_policy": backtest.get("execution_policy", CRYPTO_EXECUTION_POLICY),
     }
 
 
@@ -314,4 +355,6 @@ def _empty_result(cfg: CryptoEvaluatorConfig, reason: str) -> dict[str, Any]:
         "hard_reject": [reason],
         "config": asdict(cfg),
         "signal_path": "feature_snapshot",
+        "execution_policy": CRYPTO_EXECUTION_POLICY,
+        "execution_resolver": "crypto.execution.resolve_next_bar_open_fill",
     }
