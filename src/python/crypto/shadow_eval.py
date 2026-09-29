@@ -105,9 +105,12 @@ def _walk_forward_with_signal(
         )
         i += cfg.wf_step_bars
     n_tr = sum(w["n_trades"] for w in windows)
-    exp = float(np.mean([w["expectancy"] for w in windows])) if windows else 0.0
-    mdd = float(np.max([w["max_drawdown"] for w in windows])) if windows else 0.0
-    pos_folds = sum(1 for w in windows if float(w.get("expectancy") or 0) > 0)
+    # VALID folds only: trade_count > 0. Zero-trade folds = insufficient evidence, not neutral.
+    valid = [w for w in windows if int(w.get("n_trades") or 0) > 0]
+    zero_trade = [w for w in windows if int(w.get("n_trades") or 0) <= 0]
+    exp = float(np.mean([w["expectancy"] for w in valid])) if valid else 0.0
+    mdd = float(np.max([w["max_drawdown"] for w in valid])) if valid else 0.0
+    pos_folds = sum(1 for w in valid if float(w.get("expectancy") or 0) > 0)
     return {
         "plane": "CRYPTO_RESEARCH",
         "live_execution": False,
@@ -119,10 +122,17 @@ def _walk_forward_with_signal(
         "windows": windows,
         "fold_consistency": {
             "n_folds": len(windows),
+            "n_valid_folds": len(valid),
+            "n_zero_trade_folds": len(zero_trade),
             "positive_expectancy_folds": pos_folds,
-            "positive_fold_ratio": (pos_folds / len(windows)) if windows else 0.0,
-            "worst_fold_expectancy": float(min((w["expectancy"] for w in windows), default=0.0)),
-            "worst_fold_drawdown": float(max((w["max_drawdown"] for w in windows), default=0.0)),
+            "positive_fold_ratio": (pos_folds / len(valid)) if valid else None,
+            "worst_fold_expectancy": float(min((w["expectancy"] for w in valid), default=0.0))
+            if valid
+            else None,
+            "worst_fold_drawdown": float(max((w["max_drawdown"] for w in valid), default=0.0))
+            if valid
+            else None,
+            "definition": "positive_fold_ratio = positive_expectancy / valid_folds; zero-trade excluded",
         },
         "execution_policy": "NEXT_BAR_OPEN",
         "execution_resolver": "crypto.execution.resolve_next_bar_open_fill",
