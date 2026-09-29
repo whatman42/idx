@@ -2,7 +2,7 @@
 
 Evidence → gate → strategy lifecycle status only.
 Never enables LIVE_EXECUTION. Never submits orders.
-Never promotes RESEARCH silently to PAPER_ALLOWED without evidence.
+Shadow (*_shadow) max lifecycle via this path: CANDIDATE (research review).
 """
 from __future__ import annotations
 
@@ -35,6 +35,10 @@ class CryptoPromotionDecision:
         }
 
 
+def _is_shadow(strategy_id: str) -> bool:
+    return strategy_id.endswith("_shadow") or strategy_id == "crypto_momentum_shadow"
+
+
 class CryptoPromotionGate:
     def evaluate(
         self,
@@ -53,22 +57,15 @@ class CryptoPromotionGate:
         ev = evidence or {}
         if not strategy_id.startswith("crypto_"):
             reasons.append("STRATEGY_ID_NOT_CRYPTO_NAMESPACE")
-            dec = CryptoPromotionDecision(
-                False, strategy_id, strategy_version, "REJECTED", reasons
+            return self._finish(
+                False, strategy_id, strategy_version, "REJECTED", reasons, "", persist, status_path
             )
-            if persist:
-                set_status(
-                    StrategyStatusRecord(
-                        strategy_id, strategy_version, "REJECTED", reasons
-                    ),
-                    path=status_path,
-                )
-            return dec
 
         hard = list(ev.get("hard_reject") or [])
         n = int(ev.get("n_trades") or ev.get("signals_count") or 0)
         exp = float(ev.get("expectancy") or 0.0)
         mdd = float(ev.get("max_drawdown") or 0.0)
+        eh = str(ev.get("package_hash") or "")
 
         if hard:
             reasons.extend([f"HARD:{c}" for c in hard])
@@ -79,33 +76,54 @@ class CryptoPromotionGate:
         if mdd > max_drawdown and n > 0:
             reasons.append(f"MAX_DRAWDOWN:{mdd:.3f}")
 
-        eh = str(ev.get("package_hash") or "")
         if reasons:
-            status = "RESEARCH"
-            dec = CryptoPromotionDecision(
-                False, strategy_id, strategy_version, status, reasons, evidence_hash=eh
+            status = "REJECTED" if any(r.startswith("HARD:") for r in reasons) else "RESEARCH"
+            if any(r.startswith("INSUFFICIENT") for r in reasons) and not any(
+                r.startswith("HARD:") for r in reasons
+            ):
+                status = "RESEARCH"
+            return self._finish(
+                False, strategy_id, strategy_version, status, reasons, eh, persist, status_path
             )
-            if persist:
-                set_status(
-                    StrategyStatusRecord(
-                        strategy_id, strategy_version, status, reasons, eh
-                    ),
-                    path=status_path,
-                )
-            return dec
+
+        if _is_shadow(strategy_id):
+            if promote_to_paper_allowed:
+                reasons = [
+                    "EVIDENCE_THRESHOLD_MET",
+                    "SHADOW_CANNOT_AUTO_PAPER",
+                    "SHADOW_RESEARCH_ONLY",
+                ]
+            else:
+                reasons = ["EVIDENCE_THRESHOLD_MET", "SHADOW_RESEARCH_ONLY"]
+            return self._finish(
+                True, strategy_id, strategy_version, "CANDIDATE", reasons, eh, persist, status_path
+            )
 
         status = "PAPER_ALLOWED" if promote_to_paper_allowed else "CANDIDATE"
         reasons = ["EVIDENCE_THRESHOLD_MET"]
         if status == "PAPER_ALLOWED":
             reasons.append("EXPLICIT_PAPER_ALLOWED")
+        return self._finish(
+            True, strategy_id, strategy_version, status, reasons, eh, persist, status_path
+        )
+
+    def _finish(
+        self,
+        approved: bool,
+        strategy_id: str,
+        strategy_version: str,
+        status: str,
+        reasons: list[str],
+        eh: str,
+        persist: bool,
+        status_path: Optional[str],
+    ) -> CryptoPromotionDecision:
         dec = CryptoPromotionDecision(
-            True, strategy_id, strategy_version, status, reasons, evidence_hash=eh
+            approved, strategy_id, strategy_version, status, reasons, evidence_hash=eh
         )
         if persist:
             set_status(
-                StrategyStatusRecord(
-                    strategy_id, strategy_version, status, reasons, eh
-                ),
+                StrategyStatusRecord(strategy_id, strategy_version, status, reasons, eh),
                 path=status_path,
             )
         return dec
