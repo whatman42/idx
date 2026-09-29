@@ -99,3 +99,47 @@ def latest_long_signals(bars: pd.DataFrame) -> list[dict[str, Any]]:
         if prev is None or str(s["timestamp"]) >= str(prev["timestamp"]):
             by_sym[sym] = s
     return list(by_sym.values())
+
+
+def latest_executable_long_signals(bars: pd.DataFrame) -> list[dict[str, Any]]:
+    """Signal on bar T only when bar T+1 exists (NEXT_BAR_OPEN can resolve)."""
+    res = build_crypto_features(bars)
+    if res.df.empty:
+        return []
+    scored = CryptoSma20Scorer().score_frame(res.df)
+    if scored.empty:
+        return []
+    scored = scored.copy()
+    scored["timestamp"] = pd.to_datetime(scored["timestamp"], utc=True, errors="coerce")
+    out: list[dict[str, Any]] = []
+    raw = bars.copy()
+    raw["timestamp"] = pd.to_datetime(raw["timestamp"], utc=True, errors="coerce")
+    for sym, g in scored.groupby("symbol", sort=False):
+        g = g.sort_values("timestamp")
+        longs = g[g["side"].astype(int) == 1]
+        if longs.empty:
+            continue
+        chosen = None
+        bg = raw[raw["symbol"].astype(str) == str(sym)].sort_values("timestamp")
+        for _, row in longs.iloc[::-1].iterrows():
+            ts = row["timestamp"]
+            later = bg[bg["timestamp"] > ts]
+            if later.empty:
+                continue
+            chosen = row
+            break
+        if chosen is None:
+            continue
+        out.append(
+            {
+                "timestamp": str(chosen["timestamp"]),
+                "symbol": str(sym),
+                "side": 1,
+                "confidence": float(chosen["confidence"]),
+                "score": float(chosen["score"]),
+                "price": float(chosen["price"]) if pd.notna(chosen["price"]) else None,
+                "market": "CRYPTO",
+                "quote_currency": "USDT",
+            }
+        )
+    return out
