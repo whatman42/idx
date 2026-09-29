@@ -16,6 +16,8 @@ from src.python.crypto.config import (
     CRYPTO_INITIAL_CAPITAL_USDT,
     CRYPTO_SLIPPAGE_BPS,
     CRYPTO_STATE_PATH,
+    CRYPTO_TP_PCT,
+    CRYPTO_SL_PCT,
     assert_crypto_paper_only,
     crypto_sim_assumptions,
 )
@@ -39,6 +41,8 @@ class CryptoPosition:
     avg_entry: float
     entry_timestamp: str
     signal_id: str = ""
+    tp: float = 0.0
+    sl: float = 0.0
 
 
 @dataclass
@@ -124,22 +128,35 @@ class CryptoPaperLedger:
         self.cash -= total
         self.fees_paid += fee
         pos = self.positions.get(symbol)
+        tp = slip * (1.0 + CRYPTO_TP_PCT)
+        sl = slip * (1.0 - CRYPTO_SL_PCT)
         if pos is None:
             self.positions[symbol] = CryptoPosition(
-                symbol=symbol, qty=qty, avg_entry=slip, entry_timestamp=timestamp or _utc(), signal_id=signal_id
+                symbol=symbol,
+                qty=qty,
+                avg_entry=slip,
+                entry_timestamp=timestamp or _utc(),
+                signal_id=signal_id,
+                tp=tp,
+                sl=sl,
             )
         else:
             new_qty = pos.qty + qty
             pos.avg_entry = (pos.avg_entry * pos.qty + slip * qty) / new_qty if new_qty else slip
             pos.qty = new_qty
+            pos.tp = pos.avg_entry * (1.0 + CRYPTO_TP_PCT)
+            pos.sl = pos.avg_entry * (1.0 - CRYPTO_SL_PCT)
 
         self.applied_keys.add(key)
+        pos_now = self.positions[symbol]
         fill = {
             "status": "CRYPTO_PAPER_FILL",
             "side": "BUY",
             "symbol": symbol,
             "qty": qty,
             "price": slip,
+            "tp": pos_now.tp,
+            "sl": pos_now.sl,
             "fee": fee,
             "notional": gross,
             "signal_id": signal_id,
@@ -211,6 +228,8 @@ class CryptoPaperLedger:
                 avg_entry=float(row["avg_entry"]),
                 entry_timestamp=str(row.get("entry_timestamp") or ""),
                 signal_id=str(row.get("signal_id") or ""),
+                tp=float(row.get("tp") or 0),
+                sl=float(row.get("sl") or 0),
             )
         led.fills = list(raw.get("fills") or [])
         led.applied_keys = set(raw.get("applied_keys") or [])
