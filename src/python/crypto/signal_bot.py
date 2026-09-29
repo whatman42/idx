@@ -77,12 +77,7 @@ def run_crypto_paper(
     state_path: Optional[str] = None,
     provider: Optional[BinancePublicProvider] = None,
 ) -> dict[str, Any]:
-    """Discover full USDT universe and process eligible pairs for paper signals.
-
-    max_symbols:
-      0  → process ALL eligible (requirement default)
-      N  → process first N eligible only (TEST/debug sampling; reported as SAMPLED)
-    """
+    """Discover full USDT universe and process eligible pairs for paper signals."""
     assert_crypto_paper_only()
     if not CRYPTO_ENABLED:
         return {"status": "DISABLED", "live_execution": False}
@@ -226,6 +221,29 @@ def run_crypto_paper(
         "endpoint_fallback_used": bool(getattr(prov, "endpoint_fallback_used", False)),
         "generated_at": _utc(),
     }
+
+    # Research memory (Turso/SQLite) — optional; never blocks paper
+    try:
+        from src.python.crypto.research_memory import get_crypto_research_memory
+
+        mem = get_crypto_research_memory()
+        mem_result = mem.record_cycle(report)
+        report["research_memory"] = mem_result
+        if mem.status.value != "UNAVAILABLE":
+            mem.record_strategy_version(
+                str(report.get("strategy_id") or "crypto_rule_sma20"),
+                str(report.get("strategy_version") or "crypto_sma_v0"),
+                lifecycle="RESEARCH",
+                notes="paper_cycle",
+            )
+        mem.close()
+    except Exception as e:
+        report["research_memory"] = {
+            "ok": False,
+            "reason": f"soft_fail:{type(e).__name__}",
+            "paper_blocked": False,
+        }
+
     out_dir = Path("artifacts/crypto")
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "last_report.json").write_text(
@@ -348,7 +366,6 @@ def format_crypto_telegram(report: dict[str, Any]) -> str:
 
 
 def maybe_send_telegram(text: str) -> str:
-    """Optional notify — never SSOT. Fail soft."""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     allow = os.getenv("CRYPTO_TELEGRAM_ALLOW", os.getenv("IDX_TELEGRAM_ALLOW_PAPER", "")).strip()
@@ -397,6 +414,7 @@ if __name__ == "__main__":
                     "fills_paper",
                     "telegram_status",
                     "endpoint_used",
+                    "research_memory",
                 )
             },
             indent=2,
