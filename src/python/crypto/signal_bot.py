@@ -27,6 +27,12 @@ from src.python.crypto.config import (
 from src.python.crypto.paper_ledger import CryptoPaperLedger
 from src.python.crypto.provider import BinancePublicProvider
 from src.python.crypto.risk import evaluate_crypto_entry
+from src.python.crypto.governor import govern
+from src.python.crypto.execution_gate import paper_execution_gate
+from src.python.crypto.cycle import new_cycle_id
+from src.python.crypto.signal_contract import build_signal
+from src.python.crypto.config import crypto_config_report
+from src.python.crypto.data_quality import validate_ohlcv_frame, coverage_report
 from src.python.crypto.strategy import STRATEGY_ID, STRATEGY_VERSION, crypto_sma20_signals
 from src.python.crypto.universe import CryptoUniverseProvider
 from src.python.crypto.execution import intents_from_signals, resolve_next_bar_open_fill
@@ -79,8 +85,10 @@ def run_crypto_paper(
 ) -> dict[str, Any]:
     assert_crypto_paper_only()
     assert_execution_policy()
+    cycle_id = new_cycle_id()
+    cfg_report = crypto_config_report()
     if not CRYPTO_ENABLED:
-        return {"status": "DISABLED", "live_execution": False}
+        return {"status": "DISABLED", "live_execution": False, "cycle_id": cycle_id}
 
     prov = provider or BinancePublicProvider()
     uni = CryptoUniverseProvider(prov)
@@ -121,6 +129,9 @@ def run_crypto_paper(
     blocked_no_next: list = []
     fills: list = []
     risk_skips = 0
+    governor_blocks = 0
+    gate_blocks = 0
+    signal_contracts: list = []
     signals: list = []
     summary: dict = {}
     ohlcv_ok = 0
@@ -182,45 +193,109 @@ def run_crypto_paper(
             sym = intent.symbol
             if sym in ledger.positions:
                 continue
+            # Signal contract (intent only — no fill price)
+            try:
+                ref_px = float(marks.get(sym) or 0) or float(
+                    getattr(intent, "reference_price", 0) or 0
+                )
+                if ref_px <= 0 and not all_bars.empty:
+                    sub = all_bars[all_bars["symbol"].astype(str) == sym]
+                    if not sub.empty:
+                        ref_px = float(sub.iloc[-1]["close"])
+                csig = build_signal(
+                    cycle_id=cycle_id,
+                    symbol=sym,
+                    signal_timestamp=str(intent.signal_timestamp),
+                    side="BUY",
+                    reference_price=ref_px if ref_px > 0 else 1e-12,
+                    strategy_id=STRATEGY_ID,
+                    strategy_version=STRATEGY_VERSION,
+                )
+                signal_contracts.append(csig.to_dict())
+                sid = csig.signal_id
+            except Exception:
+                sid = intent.signal_id or (
+                    f"crypto_{str(intent.signal_timestamp)[:10]}_{sym}_{STRATEGY_VERSION}"
+                )
+
+            already = any(
+                f.get("signal_id") == sid and f.get("status") == "CRYPTO_PAPER_FILL"
+                for f in ledger.fills
+            ) or (sid in getattr(ledger, "applied_keys", set()))
+
+            # Probe execution readiness (does not fill)
             resolved = resolve_next_bar_open_fill(
                 all_bars,
                 symbol=sym,
                 signal_timestamp=intent.signal_timestamp,
                 slippage_bps=CRYPTO_SLIPPAGE_BPS,
             )
-            if resolved.status != "READY":
-                blocked_no_next.append(resolved.to_dict())
-                continue
-            px = float(resolved.fill_price)
+            px = float(resolved.fill_price) if resolved.status == "READY" else 0.0
+
             rd = evaluate_crypto_entry(
                 equity_usdt=ledger.equity(marks),
                 open_count=len(ledger.positions),
                 symbol=sym,
-                price=px,
+                price=px if px > 0 else None,
+                ledger_ok=True,
             )
-            if not rd.allow:
+            if not rd.allowed:
                 risk_skips += 1
                 continue
+
+            gov = govern(
+                risk_allowed=rd.allowed,
+                risk_reason=rd.reason,
+                strategy_paper_allowed=True,
+                data_stale=False,
+                ledger_ok=True,
+                duplicate_signal=already,
+                execution_policy_ok=(CRYPTO_EXECUTION_POLICY == "NEXT_BAR_OPEN"),
+                feature_ok=True,
+                universe_ok=True,
+            )
+            if gov.state != "ALLOW":
+                governor_blocks += 1
+                continue
+
+            gate = paper_execution_gate(
+                bars=all_bars,
+                symbol=sym,
+                signal_timestamp=str(intent.signal_timestamp),
+                strategy_paper_allowed=True,
+                governor_state=gov.state,
+                ledger_healthy=True,
+                already_applied=already,
+                slippage_bps=CRYPTO_SLIPPAGE_BPS,
+            )
+            if not gate.allowed:
+                gate_blocks += 1
+                if gate.reason_code == "CRYPTO_NO_FILL":
+                    blocked_no_next.append(gate.to_dict())
+                continue
+
+            px = float(gate.fill_price)
             notional = ledger.equity(marks) * rd.weight
             inst_meta = next((i for i in candidates if i.symbol == sym), None)
-            sid = intent.signal_id or (
-                f"crypto_{str(intent.signal_timestamp)[:10]}_{sym}_{STRATEGY_VERSION}"
-            )
             fill = ledger.apply_buy(
                 symbol=sym,
                 price=px,
                 notional_usdt=notional,
                 signal_id=sid,
-                timestamp=resolved.fill_timestamp or _utc(),
+                timestamp=gate.fill_timestamp or _utc(),
                 min_qty=float(inst_meta.min_quantity) if inst_meta else 0.0,
                 min_notional=float(inst_meta.min_notional) if inst_meta else 0.0,
                 qty_precision=int(inst_meta.quantity_precision) if inst_meta else 8,
             )
             fill["execution_policy"] = CRYPTO_EXECUTION_POLICY
             fill["signal_timestamp"] = intent.signal_timestamp
-            fill["fill_timestamp"] = resolved.fill_timestamp
-            fill["fill_open"] = resolved.fill_open
+            fill["fill_timestamp"] = gate.fill_timestamp
+            fill["fill_open"] = gate.fill_open
             fill["same_bar_fill"] = False
+            fill["cycle_id"] = cycle_id
+            fill["governor"] = gov.to_dict()
+            fill["gate"] = gate.to_dict()
+            fill["paper_status"] = "PAPER_FILL" if fill.get("status") == "CRYPTO_PAPER_FILL" else fill.get("status")
             fills.append(fill)
             if fill.get("status") == "CRYPTO_PAPER_FILL":
                 marks[sym] = float(fill["price"])
@@ -257,6 +332,20 @@ def run_crypto_paper(
         "portfolio": summary,
         "simulation": crypto_sim_assumptions(),
         "execution_policy": CRYPTO_EXECUTION_POLICY,
+        "cycle_id": cycle_id,
+        "config": cfg_report,
+        "governor_blocks": governor_blocks,
+        "gate_blocks": gate_blocks,
+        "signal_contracts_count": len(signal_contracts),
+        "coverage": coverage_report(
+            discovered=discovery.discovered_count,
+            eligible=n_eligible,
+            evaluated=n_cand,
+            ohlcv_ok=ohlcv_ok,
+            ohlcv_failed=len(ohlcv_errors),
+            signals=len(signals),
+            fills_paper=sum(1 for f in fills if f.get("status") == "CRYPTO_PAPER_FILL"),
+        ),
         "endpoint_used": getattr(prov, "endpoint_used", ""),
         "endpoint_fallback_used": bool(getattr(prov, "endpoint_fallback_used", False)),
         "generated_at": _utc(),
