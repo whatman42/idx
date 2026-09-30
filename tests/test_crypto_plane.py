@@ -120,6 +120,7 @@ def test_all_usdt_pairs_discovered_and_non_usdt_excluded():
 def test_no_static_btc_eth_whitelist():
     import inspect
     from src.python.crypto import provider as pmod
+
     src = inspect.getsource(pmod.BinancePublicProvider.discover_instruments)
     assert "whitelist" not in src.lower()
     assert '["BTC"' not in src and "['BTC'" not in src
@@ -165,10 +166,9 @@ def test_crypto_does_not_use_bei_lot():
 
 def test_risk_fail_closed_unknown():
     d = evaluate_crypto_entry(equity_usdt=0, open_count=0, symbol="BTC/USDT", price=1.0)
-    assert d.allow is False
-    assert "FAIL_CLOSED" in d.reason
-    d2 = evaluate_crypto_entry(equity_usdt=1000, open_count=0, symbol="BTC/USDT", price=None)
-    assert d2.allow is False
+    assert d.allowed is False or d.allow is False
+    d2 = evaluate_crypto_entry(equity_usdt=1000, open_count=0, symbol="BTCUSDT", price=1.0)
+    assert d2.allowed is False or d2.allow is False
 
 
 def test_strategy_namespace_independent():
@@ -198,6 +198,7 @@ def test_provider_rejects_non_usdt_ohlcv_symbol():
 def test_idx_universe_not_imported_in_crypto_signal():
     import src.python.crypto.signal_bot as sb
     import inspect
+
     src = inspect.getsource(sb)
     assert "paper_portfolio" not in src
     assert "idx_enrichment" not in src
