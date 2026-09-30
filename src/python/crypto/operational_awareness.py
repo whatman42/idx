@@ -3,6 +3,9 @@
 NOT consciousness. NOT a decision-maker. NOT allowed to mutate:
   strategy, risk config, promotion state, execution policy, paper ledger.
 
+Contract: observe → classify → explain → record
+Forbidden: observe → modify → trade
+
 Produces cycle diagnosis answering:
   WHAT DID I SEE / DECIDE / REFUSE / EXECUTE / WHY /
   FINANCIAL STATE / SYSTEM HEALTH / WHAT CHANGED
@@ -16,6 +19,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 AWARENESS_VERSION = "crypto_awareness_v1"
+BASELINE_LOCKED = True  # observe → classify → explain → record only
+FORBIDDEN_PATTERN = "observe → modify → trade"
 PREV_SNAPSHOT_PATH = "artifacts/crypto/awareness/last_cycle_snapshot.json"
 
 
