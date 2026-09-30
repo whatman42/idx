@@ -132,6 +132,7 @@ def run_crypto_paper(
     governor_blocks = 0
     gate_blocks = 0
     signal_contracts: list = []
+    data_quality_blocks = 0
     signals: list = []
     summary: dict = {}
     ohlcv_ok = 0
@@ -170,6 +171,13 @@ def run_crypto_paper(
                         ]
                     )
                 )
+                vq = validate_ohlcv_frame(frames[-1], symbol=inst.symbol)
+                if not vq.get("ok"):
+                    data_quality_blocks += 1
+                    issues = ",".join(vq.get("issues") or [])
+                    ohlcv_errors.append(f"{inst.symbol}:DATA_QUALITY_BLOCK:{issues}")
+                    frames.pop()
+                    continue
                 ohlcv_ok += 1
             except Exception as e:
                 ohlcv_errors.append(f"{inst.symbol}:{type(e).__name__}")
@@ -329,6 +337,9 @@ def run_crypto_paper(
         "blocked_no_next_bar": blocked_no_next[:50],
         "blocked_no_next_count": len(blocked_no_next),
         "risk_skips": risk_skips,
+        "risk_blocks": risk_skips,
+        "data_quality_blocks": data_quality_blocks,
+        "data_quality_block_count": data_quality_blocks,
         "portfolio": summary,
         "simulation": crypto_sim_assumptions(),
         "execution_policy": CRYPTO_EXECUTION_POLICY,
