@@ -40,6 +40,9 @@ class CryptoSignal:
     execution_policy: str
     executable_at: str
     confidence: float = 0.0
+    source: str = "crypto_paper_ops"
+    contract_version: str = "crypto_signal_v1"
+    feature_snapshot_ref: str = ""
     risk_meta: Optional[dict] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -61,6 +64,7 @@ def build_signal(
     strategy_version: str = CRYPTO_STRATEGY_VERSION,
     feature_version: str = CRYPTO_FEATURE_VERSION,
     risk_meta: Optional[dict] = None,
+    feature_snapshot_ref: str = "",
 ) -> CryptoSignal:
     assert_crypto_paper_only()
     side_u = str(side).upper()
@@ -88,5 +92,6 @@ def build_signal(
         execution_policy=CRYPTO_EXECUTION_POLICY,
         executable_at="T+1_OPEN",
         confidence=float(confidence or 0.0),
+        feature_snapshot_ref=feature_snapshot_ref or "",
         risk_meta=risk_meta or {},
     )
