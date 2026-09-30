@@ -19,7 +19,6 @@ def _entry_date(ts: Optional[str]) -> str:
     if "T00:00:00" in s or s.endswith(" 00:00:00"):
         return s[:10]
     if len(s) >= 10 and s[4] == "-" and s[7] == "-":
-        # keep full if has non-midnight time
         if "T" in s and not s[11:19].startswith("00:00:00"):
             return s[:19].replace("T", " ")
         return s[:10]
@@ -54,7 +53,6 @@ def _pct(x: float | None, digits: int = 2) -> str:
 
 
 def _mode_label(report: CycleReport) -> str:
-    """Display actual mode; never claim LIVE if live_execution is false."""
     mode = (report.mode or "-").upper()
     if report.live_execution:
         return f"Mode: {mode} • LIVE"
@@ -175,8 +173,6 @@ class DeterministicComposer:
                 _SEP,
             ]
             return lines
-
-        # SSOT: Total P/L = equity − initial_capital (includes fees in cash)
         base = float(pf.initial_capital or 0)
         equity = float(pf.equity or 0)
         total_pnl = equity - base if base else 0.0
@@ -184,7 +180,6 @@ class DeterministicComposer:
         unrealized = float(pf.unrealized_pnl or 0)
         pnl_pct = (total_pnl / base * 100.0) if base > 0 else None
         n_pos = len(pf.open_positions or [])
-
         lines += [
             f"Modal Awal       : {_rp(pf.initial_capital)}" if pf.initial_capital else "Modal Awal       : -",
             f"Total Equity     : {_rp(pf.equity)}",
@@ -205,7 +200,6 @@ class DeterministicComposer:
     def _decision_block(self, report: CycleReport) -> list[str]:
         label = _decision_label(report)
         lines = ["🎯 KEPUTUSAN BOT", "", label, ""]
-
         sig = report.signal
         if sig and sig.decision == "BUY":
             why = (sig.explanation_context or sig.technical_factors or [])[:3]
@@ -231,7 +225,27 @@ class DeterministicComposer:
             elif fill:
                 lines.append(f"Status simulasi: {fill}")
             lines.append("Broker: tidak dikirim — NO LIVE EXECUTION.")
-            lines.append(f"📦 ASET PORTOFOLIO: {sig.symbol} tercatat di paper portfolio.")
+            # Position claim ONLY if PAPER_FILLED and symbol is in portfolio SSOT
+            pf = report.portfolio
+            open_syms = {
+                str(getattr(op, "symbol", "") or "")
+                for op in (getattr(pf, "open_positions", None) or [])
+            }
+            filled_ok = fill in ("PAPER_FILLED", "FULL_FILL", "FILLED", "FULL FILL")
+            if filled_ok and sig.symbol in open_syms:
+                lines.append(f"📦 ASET PORTOFOLIO: {sig.symbol} tercatat di paper portfolio.")
+            elif (
+                fill in ("SKIPPED_CASH", "SKIPPED_EXISTING_POSITION", "SKIPPED_COOLDOWN")
+                or str(fill).startswith("SKIPPED_")
+                or str(fill).startswith("REJECTED_")
+                or str(fill).startswith("BLOCKED")
+            ):
+                lines.append(f"Tidak ada PAPER_FILL untuk {sig.symbol} ({fill}).")
+                lines.append("Portfolio tidak berubah dari sinyal ini.")
+            elif filled_ok and sig.symbol not in open_syms:
+                lines.append(
+                    f"⚠️ ANOMALI: status {fill} tetapi {sig.symbol} tidak ada di portfolio SSOT."
+                )
         elif sig and sig.decision == "SELL":
             why = (sig.explanation_context or [])[:3]
             for w in why:
@@ -258,7 +272,6 @@ class DeterministicComposer:
                 lines.append("Pertahankan posisi yang sudah ada; tidak ada pembelian baru.")
             else:
                 lines.append("Tidak ada pembelian baru hari ini.")
-
         lines += ["", _SEP]
         return lines
 
@@ -308,9 +321,7 @@ class DeterministicComposer:
         for e in exits[:10]:
             lines.append(f"• {e.symbol}")
             lines.append(f"  Harga Beli / Jual : {_rp(e.entry_price)} → {_rp(e.exit_price)}")
-            lines.append(
-                f"  Jumlah       : {_num(e.lots, 0)} lot ({_num(e.shares, 0)} lembar)"
-            )
+            lines.append(f"  Jumlah       : {_num(e.lots, 0)} lot ({_num(e.shares, 0)} lembar)")
             lines.append(f"  P/L          : {_rp(e.realized_pnl)} ({_pct(e.pnl_pct)})")
             lines.append(f"  Alasan       : {e.exit_reason or '-'}")
             lines.append(f"  Waktu        : {e.timestamp or '-'}")
@@ -336,9 +347,7 @@ class DeterministicComposer:
                 lines.append(f"  Target 1 / 2    : {_rp(sig.tp1)} / {_rp(sig.tp2)}")
             lines.append(f"  Batas Rugi      : {_rp(sig.stop_loss) if sig.stop_loss else '-'}")
             if sig.lots or sig.shares:
-                lines.append(
-                    f"  Ukuran posisi   : {_num(sig.lots, 0)} lot / {_num(sig.shares, 0)} lembar"
-                )
+                lines.append(f"  Ukuran posisi   : {_num(sig.lots, 0)} lot / {_num(sig.shares, 0)} lembar")
             if sig.position_value:
                 lines.append(f"  Nilai posisi    : {_rp(sig.position_value)}")
             if sig.allocation_pct:
@@ -385,18 +394,25 @@ class DeterministicComposer:
 
     def _system_block(self, report: CycleReport) -> list[str]:
         sig = report.signal
-        n_pos = len(report.portfolio.open_positions) if report.portfolio and report.portfolio.open_positions else 0
+        open_pos = list(report.portfolio.open_positions) if report.portfolio and report.portfolio.open_positions else []
+        n_pos = len(open_pos)
+        pos_syms = [str(p.symbol) for p in open_pos if getattr(p, "symbol", None)]
+
         filled = int(getattr(report, "signals_filled", 0) or 0)
         received = int(getattr(report, "signals_received", 0) or 0)
+        filled_syms = [s for s in list(getattr(report, "filled_symbols", None) or []) if s]
+
         if received <= 0 and sig and sig.decision in ("BUY", "SELL"):
-            received = 1
+            received = max(1, n_pos) if n_pos else 1
         if filled <= 0 and sig and (getattr(sig, "fill_status", "") or "") in (
             "PAPER_FILLED", "FULL_FILL", "FILLED", "FULL FILL"
         ):
-            filled = 1
-        filled_syms = list(getattr(report, "filled_symbols", None) or [])
-        if not filled_syms and sig and sig.decision == "BUY" and filled:
-            filled_syms = [sig.symbol]
+            filled = n_pos if n_pos > 0 else 1
+        if not filled_syms:
+            if n_pos > 0:
+                filled_syms = pos_syms
+            elif sig and sig.decision == "BUY" and filled:
+                filled_syms = [sig.symbol]
 
         gate = report.risk_gate or "-"
         lines = [
@@ -407,7 +423,7 @@ class DeterministicComposer:
             f"Posisi terbuka         : {n_pos}",
         ]
         if filled_syms:
-            lines.append(f"Aset terisi (cycle)    : {', '.join(filled_syms)}")
+            lines.append(f"Aset di portofolio     : {', '.join(filled_syms)}")
         lines += [
             f"Risk gate              : {gate}",
             f"Status sistem          : {_system_status(report)}",
