@@ -144,36 +144,80 @@ def validate_ohlcv(
             uniq.append(i)
     report.issues = uniq
     report.ok = len(uniq) == 0
-    if not report.ok:
-        if "empty_frame" in uniq or report.rows == 0:
-            report.status = "DATA_UNAVAILABLE"
-        elif any(x.startswith("symbols_missing") or x.startswith("coverage") for x in uniq):
-            report.status = "PARTIAL_DATA"
-        else:
-            report.status = "INVALID_OHLCV"
-    else:
-        report.status = "PASS"
+    report.status = "PASS" if report.ok else "FAIL"
     return report
 
 
-def universe_coverage_report(
-    expected: list[str],
-    received: list[str],
-    valid: Optional[list[str]] = None,
-) -> dict[str, Any]:
-    exp = [str(s) for s in expected]
-    got = [str(s) for s in received]
-    val = [str(s) for s in (valid if valid is not None else received)]
-    miss = sorted(set(exp) - set(got))
-    inv = sorted(set(got) - set(val))
-    cov = (len(exp) - len(miss)) / len(exp) if exp else 0.0
-    return {
-        "symbols_expected": len(exp),
-        "symbols_received": len(set(got)),
-        "symbols_valid": len(set(val)),
-        "symbols_invalid": len(inv),
-        "symbols_missing": len(miss),
-        "coverage_ratio": cov,
-        "missing_list": miss[:50],
-        "status": "PASS" if not miss and not inv else "PARTIAL_DATA",
+def ohlc_geometry_mask(df: pd.DataFrame) -> "pd.Series":
+    """True = valid OHLC geometry for the row. Safe on missing columns (all False)."""
+    if df is None or getattr(df, "empty", True):
+        return pd.Series(dtype=bool)
+    need = {"open", "high", "low", "close"}
+    if not need.issubset(set(df.columns)):
+        return pd.Series([False] * len(df), index=df.index)
+    o = pd.to_numeric(df["open"], errors="coerce")
+    h = pd.to_numeric(df["high"], errors="coerce")
+    l = pd.to_numeric(df["low"], errors="coerce")
+    c = pd.to_numeric(df["close"], errors="coerce")
+    valid = (
+        o.notna() & h.notna() & l.notna() & c.notna()
+        & (h >= o) & (h >= c) & (h >= l)
+        & (l <= o) & (l <= c) & (l <= h)
+        & (c > 0)
+    )
+    return valid.fillna(False)
+
+
+def quarantine_invalid_ohlc_geometry(
+    df: pd.DataFrame,
+    *,
+    min_keep_ratio: float = 0.0,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Drop rows with invalid OHLC geometry BEFORE production DQ.
+
+    Does NOT relax validate_ohlcv — production gate stays fail-closed.
+    Returns (clean_df, audit_report).
+    """
+    if df is None or getattr(df, "empty", True):
+        return df if df is not None else pd.DataFrame(), {
+            "ok": False,
+            "reason": "empty_frame",
+            "rows_in": 0,
+            "rows_out": 0,
+            "rows_quarantined": 0,
+            "symbols_quarantined": [],
+            "symbols_fully_dropped": [],
+        }
+    work = df.copy()
+    mask = ohlc_geometry_mask(work)
+    bad = work.loc[~mask]
+    good = work.loc[mask].copy()
+    bad_syms: dict[str, int] = {}
+    if not bad.empty and "symbol" in bad.columns:
+        bad_syms = bad.groupby(bad["symbol"].astype(str)).size().astype(int).to_dict()
+    fully_dropped = []
+    if "symbol" in work.columns:
+        for sym, n_bad in bad_syms.items():
+            n_all = int((work["symbol"].astype(str) == sym).sum())
+            if n_bad >= n_all:
+                fully_dropped.append(sym)
+    rows_in = len(work)
+    rows_out = len(good)
+    ratio = (rows_out / rows_in) if rows_in else 0.0
+    report = {
+        "ok": rows_out > 0 and ratio >= float(min_keep_ratio),
+        "reason": "geometry_quarantine",
+        "rows_in": rows_in,
+        "rows_out": rows_out,
+        "rows_quarantined": int((~mask).sum()),
+        "keep_ratio": round(ratio, 6),
+        "symbols_quarantined": sorted(bad_syms.keys()),
+        "quarantine_counts": {k: int(v) for k, v in sorted(bad_syms.items(), key=lambda x: -x[1])[:50]},
+        "symbols_fully_dropped": sorted(fully_dropped)[:100],
+        "sample_bad_rows": (
+            bad.head(10)[["timestamp", "symbol", "open", "high", "low", "close"]].astype(str).to_dict("records")
+            if not bad.empty and set(REQUIRED_COLS).issubset(bad.columns)
+            else []
+        ),
     }
+    return good.reset_index(drop=True), report
