@@ -1,1 +1,0 @@
-PART_A = """PLACEHOLDER_A"""
