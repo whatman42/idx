@@ -150,6 +150,9 @@ def fetch_and_save_csv(
     from pathlib import Path
     provider = YFinanceProvider(period=period, batch_size=batch_size)
     contract = provider.fetch(symbols)
+    from src.python.data.quality import quarantine_invalid_ohlc_geometry
+    clean_df, qrep = quarantine_invalid_ohlc_geometry(contract.df)
+    contract.df = clean_df
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     contract.df.to_csv(path, index=False)
@@ -158,6 +161,7 @@ def fetch_and_save_csv(
         "path": str(path),
         "source": contract.source,
         "rows": len(contract.df),
+        "geometry_quarantine": qrep,
         "symbols_requested": len(symbols),
         "symbols_loaded": sorted(contract.df["symbol"].astype(str).unique().tolist()),
         "symbols_loaded_count": int(contract.df["symbol"].nunique()),
