@@ -101,4 +101,8 @@ def cost_models_summary() -> dict[str, Any]:
         "broker_adapter": brk.to_dict(),
         "rule": "paper_uses_simulation_only; broker_adapter_for_calibration",
         "version": "cost_model_v2",
+        "research_note": (
+            "Use broker_adapter only for sensitivity in EvidencePackage research_metrics; "
+            "ops paper portfolio stays on SimulationCostModel until calibrated."
+        ),
     }
